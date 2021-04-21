@@ -5,6 +5,7 @@ default: all
 
 EXAMPLES = spmvApp
 ALLEXAMPLES = ${EXAMPLES}
+MOAB_CXXFLAGS += -std=c++14
 
 all: $(ALLEXAMPLES)
 

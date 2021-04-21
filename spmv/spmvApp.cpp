@@ -25,11 +25,17 @@
 #include "netcdfcpp.h"
 #endif
 
-#ifndef MOAB_HAVE_EIGEN3
-#error Require Eigen3 headers in order to apply SpMV routines
-#else
+// Defines for LA experiments
+#undef MOAB_HAVE_EIGEN3
+#define MOAB_HAVE_GINKGO
+
+#ifdef MOAB_HAVE_EIGEN3
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
+#endif
+
+#ifdef MOAB_HAVE_GINKGO
+#include <ginkgo/ginkgo.hpp>
 #endif
 
 // C++ includes
@@ -62,6 +68,13 @@ void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt 
 void SetEigen3Matrix( Eigen::SparseMatrix< MOABReal >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
                       const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
                       const std::vector< MOABReal >& vecS );
+#endif
+
+#ifdef MOAB_HAVE_GINKGO
+template< typename MatrixType >
+void SetGinkgoMatrix( std::unique_ptr< MatrixType >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
+                      const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
+                      const std::vector< MOABReal >& vecS);
 #endif
 
 #define PUSH_TIMER()          \
@@ -113,6 +126,33 @@ int main( int argc, char** argv )
 #ifdef MOAB_HAVE_EIGEN3
     Eigen::SparseMatrix< MOABReal > srcMapOperator;
 #endif
+#ifdef MOAB_HAVE_GINKGO
+		const auto executor_string = "reference"; // "reference", "omp", "cuda"
+		// Figure out where to run the code
+		std::map<std::string, std::function<std::shared_ptr<gko::Executor>()>>
+			exec_map{
+				{"omp", [] { return gko::OmpExecutor::create(); }},
+				{"cuda",
+					[] {
+							return gko::CudaExecutor::create(0, gko::OmpExecutor::create(),
+																							true);
+					}},
+				{"reference", [] { return gko::ReferenceExecutor::create(); }}};
+		// executor where Ginkgo will perform the computation
+		const auto exec = exec_map.at(executor_string)();  // throws if not valid
+		// executor used by the application
+		const auto app_exec = exec->get_master();
+
+		// Define a SparseMatrix type
+		using mtx = gko::matrix::Csr<MOABReal, MOABUInt>;
+		// using mtx = gko::matrix::Coo<MOABReal, MOABUInt>;
+		// using mtx = gko::matrix::Ell<MOABReal, MOABUInt>;
+		// using mtx = gko::matrix::Hybrid<MOABReal, MOABUInt>;
+		// using mtx = gko::matrix::Sellp<MOABReal, MOABUInt>;
+
+		// Define a Vector type
+    using vec = gko::matrix::Dense<MOABReal>;
+#endif
 
     ErrorCode rval;
     MOABSInt nOpRows, nOpCols, nOpNNZs;
@@ -138,6 +178,7 @@ int main( int argc, char** argv )
         SetKokkosCSRMatrix( srcMapOperator, nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
 #endif
 #ifdef MOAB_HAVE_GINKGO
+				auto srcMapOperator = mtx::create(app_exec, gko::dim<2>( nOpRows, nOpCols ), nOpNNZs);
         // CSR, COO, ELL, Hybrid-ELL formats ?
         SetGinkgoMatrix( srcMapOperator, nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
 #endif
@@ -145,11 +186,12 @@ int main( int argc, char** argv )
         PRINT_TIMER( "SetRemapOperator" )
     }
 
+#ifdef MOAB_HAVE_EIGEN3
     // First let us perform SpMV from Source to Target
     {
         // multiple RHS for each variable to be projected
-        Eigen::MatrixXd srcTgt = Eigen::MatrixXd::Random( srcMapOperator.cols(), rhsvsize );
-        Eigen::MatrixXd tgtSrc = Eigen::MatrixXd::Zero( srcMapOperator.rows(), rhsvsize );
+        Eigen::MatrixXd srcTgt = Eigen::MatrixXd::Random( nOpCols, rhsvsize );
+        Eigen::MatrixXd tgtSrc = Eigen::MatrixXd::Zero( nOpRows, rhsvsize );
 
         PUSH_TIMER()
         for( auto iR = 0; iR < n_remap_iterations; ++iR )
@@ -171,8 +213,8 @@ int main( int argc, char** argv )
     {
         Eigen::SparseMatrix< MOABReal > srcTMapOperator = srcMapOperator.transpose();
         // multiple RHS for each variable to be projected
-        Eigen::MatrixXd srcTgt = Eigen::MatrixXd::Zero( srcMapOperator.cols(), rhsvsize );
-        Eigen::MatrixXd tgtSrc = Eigen::MatrixXd::Random( srcMapOperator.rows(), rhsvsize );
+        Eigen::MatrixXd srcTgt = Eigen::MatrixXd::Zero( nOpCols, rhsvsize );
+        Eigen::MatrixXd tgtSrc = Eigen::MatrixXd::Random( nOpRows, rhsvsize );
 
         PUSH_TIMER()
         for( auto iR = 0; iR < n_remap_iterations; ++iR )
@@ -188,6 +230,54 @@ int main( int argc, char** argv )
                   << " RemapOperator: SpMV-Transpose(1) = " << totalTCPU_MS / ( n_remap_iterations * rhsvsize )
                   << " and SpMV-Transpose(" << rhsvsize << ") = " << totalTCPU_MS / ( n_remap_iterations ) << std::endl;
     }
+#endif
+
+#ifdef MOAB_HAVE_GINKGO
+		// First let us perform SpMV from Source to Target
+    {
+        // multiple RHS for each variable to be projected
+        vec srcTgt = vec::create( app_exec, nOpCols, rhsvsize );
+        vec tgtSrc = vec::Zero( app_exec, nOpRows, rhsvsize );
+
+        PUSH_TIMER()
+        for( auto iR = 0; iR < n_remap_iterations; ++iR )
+        {
+            // Project data from source to target through weight application for each variable
+            for( auto iVar = 0; iVar < rhsvsize; ++iVar )
+                tgtSrc.col( iVar ) = srcMapOperator * srcTgt.col( iVar );
+        }
+        POP_TIMER( "RemapTotalSpMV" )
+
+        const MOABReal totalCPU_MS = static_cast< MOABReal >( timeLog["RemapTotalSpMV"].count() ) / ( 1E6 );
+        std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
+                  << " RemapOperator: SpMV(1) = " << totalCPU_MS / ( n_remap_iterations * rhsvsize )
+                  << " and SpMV(" << rhsvsize << ") = " << totalCPU_MS / ( n_remap_iterations ) << std::endl;
+    }
+
+    // Now let us repeat SpMV from Target to Source if requested
+    if( is_target_transposed )
+    {
+        Eigen::SparseMatrix< MOABReal > srcTMapOperator = srcMapOperator.transpose();
+        // multiple RHS for each variable to be projected
+        vec srcTgt = vec::Zero( app_exec, nOpCols, rhsvsize );
+        vec tgtSrc = vec::Random( app_exec, nOpRows, rhsvsize );
+
+        PUSH_TIMER()
+        for( auto iR = 0; iR < n_remap_iterations; ++iR )
+        {
+            // Project data from target to source through transpose application for each variable
+            for( auto iVar = 0; iVar < rhsvsize; ++iVar )
+                srcTgt.col( iVar ) = srcTMapOperator * tgtSrc.col( iVar );
+        }
+        POP_TIMER( "RemapTransposeTotalSpMV" )
+
+        const MOABReal totalTCPU_MS = static_cast< MOABReal >( timeLog["RemapTransposeTotalSpMV"].count() ) / ( 1E6 );
+        std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
+                  << " RemapOperator: SpMV-Transpose(1) = " << totalTCPU_MS / ( n_remap_iterations * rhsvsize )
+                  << " and SpMV-Transpose(" << rhsvsize << ") = " << totalTCPU_MS / ( n_remap_iterations ) << std::endl;
+    }
+#endif
+
 
     return 0;
 }
@@ -196,6 +286,37 @@ int main( int argc, char** argv )
 void SetEigen3Matrix( Eigen::SparseMatrix< MOABReal >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
                       const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
                       const std::vector< MOABReal >& vecS )
+{
+    const size_t nS = vecS.size();
+    // Let us populate the map object for every process
+    mapOperator.resize( nRows, nCols );
+    mapOperator.reserve( nS );
+
+    // create a triplet vector
+    typedef Eigen::Triplet< MOABReal > SparseEntry;
+    std::vector< SparseEntry > tripletList( nS );
+
+    // loop over nnz and populate the sparse matrix operator
+    for( size_t innz = 0; innz < nS; ++innz )
+    {
+        // mapOperator.insert( vecRow[innz]-1, vecCol[innz]-1 ) = vecS[innz];
+        tripletList[innz] = SparseEntry( vecRow[innz] - 1, vecCol[innz] - 1, vecS[innz] );
+    }
+
+    mapOperator.setFromTriplets( tripletList.begin(), tripletList.end() );
+
+    mapOperator.makeCompressed();
+
+    return;
+}
+#endif
+
+#ifdef MOAB_HAVE_GINKGO
+// MatrixType can be: gko::matrix::Csr<MOABReal, MOABUInt>
+template<typename MatrixType>
+void SetGinkgoMatrix( std::unique_ptr< MatrixType >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
+                      const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
+                      const std::vector< MOABReal >& vecS)
 {
     const size_t nS = vecS.size();
     // Let us populate the map object for every process
