@@ -25,75 +25,35 @@
 #include "netcdfcpp.h"
 #endif
 
-// Defines for LA experiments
-#undef MOAB_HAVE_EIGEN3
-#define MOAB_HAVE_GINKGO
+// Local includes
+#include "spmvAppUtils.h"
 
-#ifdef MOAB_HAVE_EIGEN3
-#include <Eigen/Dense>
-#include <Eigen/Sparse>
+// Defines for LA experiments
+#define USE_EIGEN3
+// #define USE_GINKGO
+// #define USE_KOKKOS
+
+#ifdef USE_EIGEN3
+#include "spmvApp-eigen3.h"
 #endif
 
-#ifdef MOAB_HAVE_GINKGO
-#include <ginkgo/ginkgo.hpp>
+#ifdef USE_GINKGO
+#include "spmvApp-ginkgo.h"
 #endif
 
 // C++ includes
 #include <iostream>
-#include <chrono>
 
-using namespace moab;
-using namespace std;
-
-// Some global typedefs
-typedef int MOABSInt;
-typedef size_t MOABUInt;
-typedef double MOABReal;
-
-typedef std::chrono::high_resolution_clock Clock;
-typedef std::chrono::high_resolution_clock::time_point Timer;
-using std::chrono::duration_cast;
-
-Timer start;
-std::map< std::string, std::chrono::nanoseconds > timeLog;
 
 moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< MOABSInt >& vecRow,
-                                 std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS, MOABSInt& nRows,
-                                 MOABSInt& nCols, MOABSInt& nNZs );
+                                   std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS, MOABSInt& nRows,
+                                   MOABSInt& nCols, MOABSInt& nNZs );
 
 void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt >& vecRow,
                     const std::vector< MOABSInt >& vecCol, const std::vector< MOABReal >& vecS );
 
-#ifdef MOAB_HAVE_EIGEN3
-void SetEigen3Matrix( Eigen::SparseMatrix< MOABReal >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
-                      const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
-                      const std::vector< MOABReal >& vecS );
-#endif
-
-#ifdef MOAB_HAVE_GINKGO
-template< typename MatrixType >
-void SetGinkgoMatrix( std::unique_ptr< MatrixType >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
-                      const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
-                      const std::vector< MOABReal >& vecS);
-#endif
-
-#define PUSH_TIMER()          \
-    {                         \
-        start = Clock::now(); \
-    }
-
-#define POP_TIMER( EventName )                                                                                \
-    {                                                                                                         \
-        std::chrono::nanoseconds elapsed = duration_cast< std::chrono::nanoseconds >( Clock::now() - start ); \
-        timeLog[EventName]               = elapsed;                                                           \
-    }
-
-#define PRINT_TIMER( EventName )                                                                                       \
-    {                                                                                                                  \
-        std::cout << "[ " << EventName                                                                                 \
-                  << " ]: elapsed = " << static_cast< double >( timeLog[EventName].count() / 1e6 ) << " milli-seconds" \
-                  << std::endl;                                                                                        \
-    }
+std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily, MOABSInt nOpRows, MOABSInt nOpCols,
+                                                     MOABSInt nOpNNZs, MOABSInt nVecs, bool enableTransposeOp );
 
 int main( int argc, char** argv )
 {
@@ -101,9 +61,17 @@ int main( int argc, char** argv )
     bool is_target_transposed           = false;
     MOABSInt n_remap_iterations         = 100;
     MOABSInt rhsvsize                   = 1;
+    std::string operator_type           = "eigen3";
 
     ProgOptions opts( "Remap SpMV Mini-App" );
-    opts.addRequiredArg< std::string >( "MapOperator", "Remap weights filename to optimize for SpMV", &remap_operator_filename );
+    opts.addRequiredArg< std::string >( "MapOperator", "Remap weights filename to optimize for SpMV",
+                                        &remap_operator_filename );
+    opts.addOpt< std::string >(
+        "package,p",
+        "Matrix package type specification for SpMV (default=\"eigen3\"). Possible values: [\"eigen3\", \"kokkos\", "
+        "\"ginkgo:CSR\", \"ginkgo:COO\", \"ginkgo:ELL\", \"ginkgo:HYB\", \"ginkgo:SEP\"]",
+        &operator_type );
+
     // opts.addOpt< std::string >( "srcmap,s", "Source map file name for projection", &remap_operator_filename );
     opts.addOpt< void >( "transpose,t", "Compute the tranpose operator application as well", &is_target_transposed );
 
@@ -119,234 +87,150 @@ int main( int argc, char** argv )
     std::cout << "    SpMV-Remap Application" << std::endl;
     std::cout << "-------------------------------" << std::endl;
     std::cout << "Source map             = " << remap_operator_filename << std::endl;
-    std::cout << "Compute transpose map  = " << ( is_target_transposed  ? "Yes" : "No" ) << std::endl;
+    std::cout << "Compute transpose map  = " << ( is_target_transposed ? "Yes" : "No" ) << std::endl;
     std::cout << "Number of iterations   = " << n_remap_iterations << std::endl;
     std::cout << std::endl;
 
-#ifdef MOAB_HAVE_EIGEN3
-    Eigen::SparseMatrix< MOABReal > srcMapOperator;
-#endif
-#ifdef MOAB_HAVE_GINKGO
-		const auto executor_string = "reference"; // "reference", "omp", "cuda"
-		// Figure out where to run the code
-		std::map<std::string, std::function<std::shared_ptr<gko::Executor>()>>
-			exec_map{
-				{"omp", [] { return gko::OmpExecutor::create(); }},
-				{"cuda",
-					[] {
-							return gko::CudaExecutor::create(0, gko::OmpExecutor::create(),
-																							true);
-					}},
-				{"reference", [] { return gko::ReferenceExecutor::create(); }}};
-		// executor where Ginkgo will perform the computation
-		const auto exec = exec_map.at(executor_string)();  // throws if not valid
-		// executor used by the application
-		const auto app_exec = exec->get_master();
-
-		// Define a SparseMatrix type
-		using mtx = gko::matrix::Csr<MOABReal, MOABUInt>;
-		// using mtx = gko::matrix::Coo<MOABReal, MOABUInt>;
-		// using mtx = gko::matrix::Ell<MOABReal, MOABUInt>;
-		// using mtx = gko::matrix::Hybrid<MOABReal, MOABUInt>;
-		// using mtx = gko::matrix::Sellp<MOABReal, MOABUInt>;
-
-		// Define a Vector type
-    using vec = gko::matrix::Dense<MOABReal>;
-#endif
-
-    ErrorCode rval;
+    HighresTimer timer;
+    moab::ErrorCode rval;
     MOABSInt nOpRows, nOpCols, nOpNNZs;
+    std::unique_ptr<SpMVOperator> opImpl;
 
     // compute source data
     {
-        // COO : Coorindate SparseMatrix
+        // COO : Coordinate SparseMatrix format
         std::vector< MOABSInt > opNNZRows, opNNZCols;
         std::vector< MOABReal > opNNZVals;
-        PUSH_TIMER()
-        rval = ReadRemapOperator( remap_operator_filename, opNNZRows, opNNZCols, opNNZVals,
-                                nOpRows, nOpCols, nOpNNZs );MB_CHK_ERR( rval );
-        POP_TIMER( "ReadRemapOperator" )
-        PRINT_TIMER( "ReadRemapOperator" )
+        timer.push();
+        rval = ReadRemapOperator( remap_operator_filename, opNNZRows, opNNZCols, opNNZVals, nOpRows, nOpCols, nOpNNZs );MB_CHK_ERR( rval );
+        timer.pop( "ReadRemapOperator", true );
 
         print_metrics( nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
 
-        PUSH_TIMER()
-#ifdef MOAB_HAVE_EIGEN3
-        SetEigen3Matrix( srcMapOperator, nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
-#endif
-#ifdef MOAB_HAVE_KOKKOSKERNELS
-        SetKokkosCSRMatrix( srcMapOperator, nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
-#endif
-#ifdef MOAB_HAVE_GINKGO
-				auto srcMapOperator = mtx::create(app_exec, gko::dim<2>( nOpRows, nOpCols ), nOpNNZs);
-        // CSR, COO, ELL, Hybrid-ELL formats ?
-        SetGinkgoMatrix( srcMapOperator, nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
-#endif
-        POP_TIMER( "SetRemapOperator" )
-        PRINT_TIMER( "SetRemapOperator" )
+        // Create the SpMV operator by initializing with appropriate sizes for allocation
+        opImpl = BuildOperatorObject( operator_type, nOpRows, nOpCols, nOpNNZs, rhsvsize, is_target_transposed );
+
+        if( opImpl )
+        {
+            timer.push();
+            // Build the SpMV operator by setting the SparseMatrix with the triplets
+            opImpl->CreateOperator( opNNZRows, opNNZCols, opNNZVals );
+            timer.pop( "SetRemapOperator", true );
+        }
     }
 
-#ifdef MOAB_HAVE_EIGEN3
-    // First let us perform SpMV from Source to Target
+    // Perform the matrix vector products and time it accurately
+    if( opImpl )
     {
-        // multiple RHS for each variable to be projected
-        Eigen::MatrixXd srcTgt = Eigen::MatrixXd::Random( nOpCols, rhsvsize );
-        Eigen::MatrixXd tgtSrc = Eigen::MatrixXd::Zero( nOpRows, rhsvsize );
-
-        PUSH_TIMER()
+        timer.push();
         for( auto iR = 0; iR < n_remap_iterations; ++iR )
         {
-            // Project data from source to target through weight application for each variable
-            for( auto iVar = 0; iVar < rhsvsize; ++iVar )
-                tgtSrc.col( iVar ) = srcMapOperator * srcTgt.col( iVar );
+            opImpl->PerformSpMV();
         }
-        POP_TIMER( "RemapTotalSpMV" )
+        timer.pop( "RemapTotalSpMV" );
 
-        const MOABReal totalCPU_MS = static_cast< MOABReal >( timeLog["RemapTotalSpMV"].count() ) / ( 1E6 );
+        const MOABReal totalCPU_MS = static_cast< MOABReal >( timer.elapsed( "RemapTotalSpMV" ) ) / ( 1E6 );
         std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
-                  << " RemapOperator: SpMV(1) = " << totalCPU_MS / ( n_remap_iterations * rhsvsize )
-                  << " and SpMV(" << rhsvsize << ") = " << totalCPU_MS / ( n_remap_iterations ) << std::endl;
-    }
+                  << " RemapOperator: SpMV(1) = " << totalCPU_MS / ( n_remap_iterations * rhsvsize ) << " and SpMV("
+                  << rhsvsize << ") = " << totalCPU_MS / ( n_remap_iterations ) << std::endl;
 
-    // Now let us repeat SpMV from Target to Source if requested
-    if( is_target_transposed )
-    {
-        Eigen::SparseMatrix< MOABReal > srcTMapOperator = srcMapOperator.transpose();
-        // multiple RHS for each variable to be projected
-        Eigen::MatrixXd srcTgt = Eigen::MatrixXd::Zero( nOpCols, rhsvsize );
-        Eigen::MatrixXd tgtSrc = Eigen::MatrixXd::Random( nOpRows, rhsvsize );
-
-        PUSH_TIMER()
-        for( auto iR = 0; iR < n_remap_iterations; ++iR )
+        if( is_target_transposed )
         {
-            // Project data from target to source through transpose application for each variable
-            for( auto iVar = 0; iVar < rhsvsize; ++iVar )
-                srcTgt.col( iVar ) = srcTMapOperator * tgtSrc.col( iVar );
+            timer.push();
+            for( auto iR = 0; iR < n_remap_iterations; ++iR )
+            {
+                opImpl->PerformSpMVTranspose();
+            }
+            timer.pop( "RemapTransposeTotalSpMV" );
+
+            const MOABReal totalTCPU_MS =
+                static_cast< MOABReal >( timer.elapsed( "RemapTransposeTotalSpMV" ) ) / ( 1E6 );
+            std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
+                      << " RemapOperator: SpMV-Transpose(1) = " << totalTCPU_MS / ( n_remap_iterations * rhsvsize )
+                      << " and SpMV-Transpose(" << rhsvsize << ") = " << totalTCPU_MS / ( n_remap_iterations )
+                      << std::endl;
         }
-        POP_TIMER( "RemapTransposeTotalSpMV" )
-
-        const MOABReal totalTCPU_MS = static_cast< MOABReal >( timeLog["RemapTransposeTotalSpMV"].count() ) / ( 1E6 );
-        std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
-                  << " RemapOperator: SpMV-Transpose(1) = " << totalTCPU_MS / ( n_remap_iterations * rhsvsize )
-                  << " and SpMV-Transpose(" << rhsvsize << ") = " << totalTCPU_MS / ( n_remap_iterations ) << std::endl;
     }
-#endif
-
-#ifdef MOAB_HAVE_GINKGO
-		// First let us perform SpMV from Source to Target
+    else
     {
-        // multiple RHS for each variable to be projected
-        vec srcTgt = vec::create( app_exec, nOpCols, rhsvsize );
-        vec tgtSrc = vec::Zero( app_exec, nOpRows, rhsvsize );
-
-        PUSH_TIMER()
-        for( auto iR = 0; iR < n_remap_iterations; ++iR )
-        {
-            // Project data from source to target through weight application for each variable
-            for( auto iVar = 0; iVar < rhsvsize; ++iVar )
-                tgtSrc.col( iVar ) = srcMapOperator * srcTgt.col( iVar );
-        }
-        POP_TIMER( "RemapTotalSpMV" )
-
-        const MOABReal totalCPU_MS = static_cast< MOABReal >( timeLog["RemapTotalSpMV"].count() ) / ( 1E6 );
-        std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
-                  << " RemapOperator: SpMV(1) = " << totalCPU_MS / ( n_remap_iterations * rhsvsize )
-                  << " and SpMV(" << rhsvsize << ") = " << totalCPU_MS / ( n_remap_iterations ) << std::endl;
+        std::cout << "Nothing to do. Please enable Eigen3, Kokkos-Kernels or Ginkgo to perform the benchmark tests.\n";
     }
-
-    // Now let us repeat SpMV from Target to Source if requested
-    if( is_target_transposed )
-    {
-        Eigen::SparseMatrix< MOABReal > srcTMapOperator = srcMapOperator.transpose();
-        // multiple RHS for each variable to be projected
-        vec srcTgt = vec::Zero( app_exec, nOpCols, rhsvsize );
-        vec tgtSrc = vec::Random( app_exec, nOpRows, rhsvsize );
-
-        PUSH_TIMER()
-        for( auto iR = 0; iR < n_remap_iterations; ++iR )
-        {
-            // Project data from target to source through transpose application for each variable
-            for( auto iVar = 0; iVar < rhsvsize; ++iVar )
-                srcTgt.col( iVar ) = srcTMapOperator * tgtSrc.col( iVar );
-        }
-        POP_TIMER( "RemapTransposeTotalSpMV" )
-
-        const MOABReal totalTCPU_MS = static_cast< MOABReal >( timeLog["RemapTransposeTotalSpMV"].count() ) / ( 1E6 );
-        std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
-                  << " RemapOperator: SpMV-Transpose(1) = " << totalTCPU_MS / ( n_remap_iterations * rhsvsize )
-                  << " and SpMV-Transpose(" << rhsvsize << ") = " << totalTCPU_MS / ( n_remap_iterations ) << std::endl;
-    }
-#endif
-
 
     return 0;
 }
 
-#ifdef MOAB_HAVE_EIGEN3
-void SetEigen3Matrix( Eigen::SparseMatrix< MOABReal >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
-                      const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
-                      const std::vector< MOABReal >& vecS )
+std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily, MOABSInt nOpRows, MOABSInt nOpCols,
+                                                     MOABSInt nOpNNZs, MOABSInt nVecs, bool enableTransposeOp )
 {
-    const size_t nS = vecS.size();
-    // Let us populate the map object for every process
-    mapOperator.resize( nRows, nCols );
-    mapOperator.reserve( nS );
+    // Check the \p operatorFamily requested
+    //
+    // Possible options:
+    //      1. "eigen3"     - CSR format
+    //      2. "kokkos"     - CSR format
+    //      3. "ginkgo:CSR" - CSR format
+    //      4. "ginkgo:COO" - COO format
+    //      5. "ginkgo:ELL" - ELL format
+    //      6. "ginkgo:HYB" - Hybrid format
+    //      7. "ginkgo:SEP" - Sell-P format
+    assert( operatorFamily.size() == 6 || operatorFamily.size() == 10 );
+    const std::string package = operatorFamily.substr(0, 6);
+    const std::string matrixtype = (operatorFamily.size() == 10 ? operatorFamily.substr( 7, 3 ) : "");
 
-    // create a triplet vector
-    typedef Eigen::Triplet< MOABReal > SparseEntry;
-    std::vector< SparseEntry > tripletList( nS );
-
-    // loop over nnz and populate the sparse matrix operator
-    for( size_t innz = 0; innz < nS; ++innz )
+    if( !package.compare( "eigen3" ) )
     {
-        // mapOperator.insert( vecRow[innz]-1, vecCol[innz]-1 ) = vecS[innz];
-        tripletList[innz] = SparseEntry( vecRow[innz] - 1, vecCol[innz] - 1, vecS[innz] );
-    }
-
-    mapOperator.setFromTriplets( tripletList.begin(), tripletList.end() );
-
-    mapOperator.makeCompressed();
-
-    return;
-}
+#ifdef USE_EIGEN3
+        std::cout << "> Building the Eigen3 *CSR* operator\n";
+        return std::unique_ptr< SpMVOperator >(
+            new Eigen3Operator( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+#else
+        std::cout << "Error: Requested operatorFamily = *" << operatorFamily << "* and package = *" << package
+                  << "* and matrixtype = *" << matrixtype << "*. Returning null operator\n";
 #endif
-
-#ifdef MOAB_HAVE_GINKGO
-// MatrixType can be: gko::matrix::Csr<MOABReal, MOABUInt>
-template<typename MatrixType>
-void SetGinkgoMatrix( std::unique_ptr< MatrixType >& mapOperator, const MOABSInt nRows, const MOABSInt nCols,
-                      const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
-                      const std::vector< MOABReal >& vecS)
-{
-    const size_t nS = vecS.size();
-    // Let us populate the map object for every process
-    mapOperator.resize( nRows, nCols );
-    mapOperator.reserve( nS );
-
-    // create a triplet vector
-    typedef Eigen::Triplet< MOABReal > SparseEntry;
-    std::vector< SparseEntry > tripletList( nS );
-
-    // loop over nnz and populate the sparse matrix operator
-    for( size_t innz = 0; innz < nS; ++innz )
+    }
+#ifdef USE_KOKKOS
+    else if( !package.compare( "kokkos" ) )
     {
-        // mapOperator.insert( vecRow[innz]-1, vecCol[innz]-1 ) = vecS[innz];
-        tripletList[innz] = SparseEntry( vecRow[innz] - 1, vecCol[innz] - 1, vecS[innz] );
+        std::cout << "> Building the Kokkos-Kernels *CSR* operator\n";
+        return std::unique_ptr< SpMVOperator >(
+            new KokkosKernelsOperator( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
     }
-
-    mapOperator.setFromTriplets( tripletList.begin(), tripletList.end() );
-
-    mapOperator.makeCompressed();
-
-    return;
-}
 #endif
+    else
+    {
+#ifdef USE_GINKGO
+        assert( !package.compare( "ginkgo" ) );
+        assert( matrixtype.size() );
+        std::cout << "> Building the Ginkgo *" << matrixtype << "* operator\n";
+
+        if( !matrixtype.compare( "CSR" ) )
+            return std::unique_ptr< SpMVOperator >(
+                new GinkgoOperator< GinkgoCSRMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+        else if( !matrixtype.compare( "COO" ) )
+            return std::unique_ptr< SpMVOperator >(
+                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+        else if( !matrixtype.compare( "ELL" ) )
+            return std::unique_ptr< SpMVOperator >(
+                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+        else if( !matrixtype.compare( "HYB" ) )
+            return std::unique_ptr< SpMVOperator >(
+                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+        else if( !matrixtype.compare( "SEP" ) )
+            return std::unique_ptr< SpMVOperator >(
+                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+#else
+        std::cout << "Error: Requested operatorFamily = *" << operatorFamily << "* and package = *" << package
+                  << "* and matrixtype = *" << matrixtype << "*. Returning null operator\n";
+#endif
+    }
+    return 0;
+}
 
 moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< MOABSInt >& vecRow,
-                                 std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS, MOABSInt& nRows,
-                                 MOABSInt& nCols, MOABSInt& nNZs )
+                                   std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS, MOABSInt& nRows,
+                                   MOABSInt& nCols, MOABSInt& nNZs )
 {
     NcError error( NcError::silent_nonfatal );
+    using namespace moab;
 
     NcVar *varRow = NULL, *varCol = NULL, *varS = NULL;
     int nS = 0, nA = 0, nB = 0;
@@ -356,17 +240,20 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
 
     // Read SparseMatrix entries
     NcDim* dimNA = ncMap.get_dim( "n_a" );
-    if( dimNA == NULL ) {
+    if( dimNA == NULL )
+    {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain dimension 'nA'" );
     }
 
     NcDim* dimNB = ncMap.get_dim( "n_b" );
-    if( dimNB == NULL ) {
+    if( dimNB == NULL )
+    {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain dimension 'nB'" );
     }
 
     NcDim* dimNS = ncMap.get_dim( "n_s" );
-    if( dimNS == NULL ) {
+    if( dimNS == NULL )
+    {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain dimension 'nS'" );
     }
 
@@ -376,19 +263,19 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
     nB = dimNB->size();
 
     varRow = ncMap.get_var( "row" );
-    if( varRow == NULL ) {
+    if( varRow == NULL )
+    {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'row'" );
     }
 
     varCol = ncMap.get_var( "col" );
-    if( varCol == NULL ) {
+    if( varCol == NULL )
+    {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'col'" );
     }
 
     varS = ncMap.get_var( "S" );
-    if( varS == NULL ) {
-        MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'S'" );
-    }
+    if( varS == NULL ) { MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'S'" ); }
 
     // Resize the vectors to hold row/col indices and nnz values
     const long offsetRead = 0;
@@ -409,7 +296,7 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
 
     nRows = nB;
     nCols = nA;
-    nNZs = nS;
+    nNZs  = nS;
 
     return moab::MB_SUCCESS;
 }
@@ -427,7 +314,7 @@ void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt 
 
     for( size_t iR = 0; iR < vecRow.size(); ++iR )
     {
-        nnzPerRow[vecRow[iR]-1]++;
+        nnzPerRow[vecRow[iR] - 1]++;
     }
     for( size_t iR = 0; iR < nnzPerRow.size(); ++iR )
     {
@@ -446,7 +333,7 @@ void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt 
     printf( "      iNNZ       n(NNZ)\n" );
     for( size_t iR = 0, index = 1; iR < nnzPerRowHist.size(); ++iR )
     {
-        if( nnzPerRowHist[iR] > 0) printf( "%3zu   %3zu     %8d\n", index++, iR, nnzPerRowHist[iR] );
+        if( nnzPerRowHist[iR] > 0 ) printf( "%3zu   %3zu     %8d\n", index++, iR, nnzPerRowHist[iR] );
     }
     printf( "---------------------------\n" );
     printf( "NNZ statistics: minima = %d, maxima = %d, average (rounded) = %3.0f\n\n", minNNZperRow, maxNNZperRow,
