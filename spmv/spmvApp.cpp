@@ -30,7 +30,7 @@
 
 // Defines for LA experiments
 #define USE_EIGEN3
-// #define USE_GINKGO
+#define USE_GINKGO
 // #define USE_KOKKOS
 
 #ifdef USE_EIGEN3
@@ -44,10 +44,10 @@
 // C++ includes
 #include <iostream>
 
-
 moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< MOABSInt >& vecRow,
-                                   std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS, MOABSInt& nRows,
-                                   MOABSInt& nCols, MOABSInt& nNZs );
+                                   std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS,
+                                   std::vector< MOABReal >& vecAreasA, std::vector< MOABReal >& vecAreasB,
+                                   MOABSInt& nRows, MOABSInt& nCols, MOABSInt& nNZs );
 
 void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt >& vecRow,
                     const std::vector< MOABSInt >& vecCol, const std::vector< MOABReal >& vecS );
@@ -59,6 +59,7 @@ int main( int argc, char** argv )
 {
     std::string remap_operator_filename = "";
     bool is_target_transposed           = false;
+    bool perform_verification           = false;
     MOABSInt n_remap_iterations         = 100;
     MOABSInt rhsvsize                   = 1;
     std::string operator_type           = "eigen3";
@@ -74,6 +75,7 @@ int main( int argc, char** argv )
 
     // opts.addOpt< std::string >( "srcmap,s", "Source map file name for projection", &remap_operator_filename );
     opts.addOpt< void >( "transpose,t", "Compute the tranpose operator application as well", &is_target_transposed );
+    opts.addOpt< void >( "verify", "Verify that the matrix-vector products are correct. (Expensive)", &perform_verification );
 
     // Need option handling here for input filename
     opts.addOpt< MOABSInt >( "vsize,v", "Number of vectors to project (default=1)", &rhsvsize );
@@ -95,6 +97,7 @@ int main( int argc, char** argv )
     moab::ErrorCode rval;
     MOABSInt nOpRows, nOpCols, nOpNNZs;
     std::unique_ptr<SpMVOperator> opImpl;
+    std::vector< MOABReal > vecAreasA, vecAreasB;
 
     // compute source data
     {
@@ -102,7 +105,8 @@ int main( int argc, char** argv )
         std::vector< MOABSInt > opNNZRows, opNNZCols;
         std::vector< MOABReal > opNNZVals;
         timer.push();
-        rval = ReadRemapOperator( remap_operator_filename, opNNZRows, opNNZCols, opNNZVals, nOpRows, nOpCols, nOpNNZs );MB_CHK_ERR( rval );
+        rval = ReadRemapOperator( remap_operator_filename, opNNZRows, opNNZCols, opNNZVals, vecAreasA, vecAreasB, nOpRows,
+                                  nOpCols, nOpNNZs );MB_CHK_ERR( rval );
         timer.pop( "ReadRemapOperator", true );
 
         print_metrics( nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
@@ -122,6 +126,8 @@ int main( int argc, char** argv )
     // Perform the matrix vector products and time it accurately
     if( opImpl )
     {
+        if( perform_verification ) { opImpl->PerformVerification( vecAreasA, vecAreasB ); }
+
         timer.push();
         for( auto iR = 0; iR < n_remap_iterations; ++iR )
         {
@@ -210,13 +216,13 @@ std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily,
                 new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
         else if( !matrixtype.compare( "ELL" ) )
             return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+                new GinkgoOperator< GinkgoELLMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
         else if( !matrixtype.compare( "HYB" ) )
             return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+                new GinkgoOperator< GinkgoHybridEllMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
         else if( !matrixtype.compare( "SEP" ) )
             return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+                new GinkgoOperator< GinkgoSellpMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
 #else
         std::cout << "Error: Requested operatorFamily = *" << operatorFamily << "* and package = *" << package
                   << "* and matrixtype = *" << matrixtype << "*. Returning null operator\n";
@@ -226,13 +232,14 @@ std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily,
 }
 
 moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< MOABSInt >& vecRow,
-                                   std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS, MOABSInt& nRows,
-                                   MOABSInt& nCols, MOABSInt& nNZs )
+                                   std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS,
+                                   std::vector< MOABReal >& vecAreasA, std::vector< MOABReal >& vecAreasB,
+                                   MOABSInt& nRows, MOABSInt& nCols, MOABSInt& nNZs )
 {
     NcError error( NcError::silent_nonfatal );
     using namespace moab;
 
-    NcVar *varRow = NULL, *varCol = NULL, *varS = NULL;
+    NcVar *varRow = nullptr, *varCol = nullptr, *varS = nullptr, *varSrcArea = nullptr, *varTgtArea = nullptr;
     int nS = 0, nA = 0, nB = 0;
 
     // Create the NetCDF C++ interface
@@ -240,19 +247,19 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
 
     // Read SparseMatrix entries
     NcDim* dimNA = ncMap.get_dim( "n_a" );
-    if( dimNA == NULL )
+    if( dimNA == nullptr )
     {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain dimension 'nA'" );
     }
 
     NcDim* dimNB = ncMap.get_dim( "n_b" );
-    if( dimNB == NULL )
+    if( dimNB == nullptr )
     {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain dimension 'nB'" );
     }
 
     NcDim* dimNS = ncMap.get_dim( "n_s" );
-    if( dimNS == NULL )
+    if( dimNS == nullptr )
     {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain dimension 'nS'" );
     }
@@ -263,25 +270,42 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
     nB = dimNB->size();
 
     varRow = ncMap.get_var( "row" );
-    if( varRow == NULL )
+    if( varRow == nullptr )
     {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'row'" );
     }
 
     varCol = ncMap.get_var( "col" );
-    if( varCol == NULL )
+    if( varCol == nullptr )
     {
         MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'col'" );
     }
 
     varS = ncMap.get_var( "S" );
-    if( varS == NULL ) { MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'S'" ); }
+    if( varS == nullptr )
+    {
+        MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'S'" );
+    }
+
+    varSrcArea = ncMap.get_var( "area_a" );
+    if( varSrcArea == nullptr )
+    {
+        MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'area_a'" );
+    }
+
+    varTgtArea = ncMap.get_var( "area_b" );
+    if( varTgtArea == nullptr )
+    {
+        MB_CHK_SET_ERR( MB_FAILURE, "Map file " << strMapFile << " does not contain variable 'area_b'" );
+    }
 
     // Resize the vectors to hold row/col indices and nnz values
     const long offsetRead = 0;
     vecRow.resize( nS );
     vecCol.resize( nS );
     vecS.resize( nS );
+    vecAreasA.resize( nA );
+    vecAreasB.resize( nB );
 
     varRow->set_cur( offsetRead );
     varRow->get( &( vecRow[0] ), nS );
@@ -291,6 +315,12 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
 
     varS->set_cur( offsetRead );
     varS->get( &( vecS[0] ), nS );
+
+    varSrcArea->set_cur( offsetRead );
+    varSrcArea->get( &( vecAreasA[0] ), nA );
+
+    varTgtArea->set_cur( offsetRead );
+    varTgtArea->get( &( vecAreasB[0] ), nB );
 
     ncMap.close();
 

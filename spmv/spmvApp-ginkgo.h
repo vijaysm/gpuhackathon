@@ -31,6 +31,8 @@ class GinkgoOperator : public SpMVOperator
     virtual ~GinkgoOperator(){};  // TODO: clear operator memory
     void CreateOperator( const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
                          const std::vector< MOABReal >& vecS );
+    virtual bool PerformVerification( const std::vector< MOABReal >& vecAreasA,
+                                      const std::vector< MOABReal >& vecAreasB );
     void PerformSpMV( int n_remap_iterations = 1 );
     void PerformSpMVTranspose( int n_remap_iterations = 1 );
 
@@ -63,69 +65,6 @@ GinkgoOperator< MatrixType >::GinkgoOperator( MOABSInt nRows, MOABSInt nCols, MO
 
     // device_executor used by the application
     this->host_executor = this->device_executor->get_master();
-
-    //  primaryMapOperator = GinkgoCSRMtx::create( this->host_executor );
-    // GinkgoMtx( app_exec, std::shared_ptr< GinkgoMtx::strategy_type >( new GinkgoMtx::merge_path() ) );
-
-
-    // // First let us perform SpMV from Source to Target
-    // {
-    //     GinkgoMtx* mapOperator = nullptr;
-    //     std::cout << "Converting matrix now\n";
-    //     primaryMapOperator->convert_to( mapOperator );
-    //     std::cout << "conversion of matrix complete now\n";
-    //     // multiple RHS for each variable to be projected
-    //     auto srcTgt = GinkgoVec::create( app_exec, gko::dim< 2 >( nOpCols, nRHSV ) );
-    //     srcTgt->fill( 1.0 );
-    //     auto tgtSrc = GinkgoVec::create( app_exec, gko::dim< 2 >( nOpRows, nRHSV ) );
-    //     tgtSrc->fill( 0.0 );
-
-    //     PUSH_TIMER()
-    //     for( auto iR = 0; iR < n_remap_iterations; ++iR )
-    //     {
-    //         // Project data from source to target through weight application for each variable
-    //         primaryMapOperator->apply( gko::lend( srcTgt ), gko::lend( tgtSrc ) );
-    //         // for( auto iVar = 0; iVar < nRHSV; ++iVar )
-    //             // tgtSrc.col( iVar ) = primaryMapOperator * srcTgt.col( iVar );
-    //     }
-    //     POP_TIMER( "RemapTotalSpMV" )
-
-    //     const MOABReal totalCPU_MS = static_cast< MOABReal >( timeLog["RemapTotalSpMV"].count() ) / ( 1E6 );
-    //     std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
-    //               << " RemapOperator: SpMV(1) = " << totalCPU_MS / ( n_remap_iterations * nRHSV ) << " and SpMV("
-    //               << nRHSV << ") = " << totalCPU_MS / ( n_remap_iterations ) << std::endl;
-    // }
-
-    // Now let us repeat SpMV from Target to Source if requested
-    // if( is_target_transposed )
-    // {
-    //     const auto primaryTransposeMapOperator = primaryMapOperator->transpose();
-
-    //     GinkgoMtx* mapOperator;
-    //     primaryTransposeMapOperator->convert_to( mapOperator );
-
-    //     // multiple RHS for each variable to be projected
-    //     auto srcTgt = GinkgoVec::create( app_exec, gko::dim< 2 >( nOpCols, nRHSV ) );
-    //     srcTgt->fill( 0.0 );
-    //     auto tgtSrc = GinkgoVec::create( app_exec, gko::dim< 2 >( nOpRows, nRHSV ) );
-    //     tgtSrc->fill( 1.0 );
-
-    //     PUSH_TIMER()
-    //     for( auto iR = 0; iR < n_remap_iterations; ++iR )
-    //     {
-    //         // Project data from target to source through transpose application for each variable
-    //         primaryTransposeMapOperator->apply( gko::lend( tgtSrc ), gko::lend( srcTgt ) );
-    //         // for( auto iVar = 0; iVar < nRHSV; ++iVar )
-    //         //     srcTgt.col( iVar ) = primaryTransposeMapOperator * tgtSrc.col( iVar );
-    //     }
-    //     POP_TIMER( "RemapTransposeTotalSpMV" )
-
-    //     const MOABReal totalTCPU_MS = static_cast< MOABReal >( timeLog["RemapTransposeTotalSpMV"].count() ) / ( 1E6 );
-    //     std::cout << "Average time (milli-secs) taken for " << n_remap_iterations
-    //               << " RemapOperator: SpMV-Transpose(1) = " << totalTCPU_MS / ( n_remap_iterations * nRHSV )
-    //               << " and SpMV-Transpose(" << nRHSV << ") = " << totalTCPU_MS / ( n_remap_iterations ) << std::endl;
-    // }
-
 }
 
 template < typename MatrixType >
@@ -138,7 +77,6 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
     // populate the default CSR matrix first
 
     // first, create a triplet vector
-    // typedef gko::detail::input_triple< MOABReal, MOABUInt > SparseEntry;
     gko::matrix_data< MOABReal > mData( gko::dim< 2 >( nOpRows, nOpCols ) );
     auto& tripletList = mData.nonzeros;
     tripletList.reserve( nS );
@@ -147,9 +85,6 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
     for( size_t innz = 0; innz < nS; ++innz )
     {
         tripletList.emplace_back( vecRow[innz] - 1, vecCol[innz] - 1, vecS[innz] );
-        // tripletList[innz].row = vecRow[innz] - 1;
-        // tripletList[innz].col = vecCol[innz] - 1;
-        // tripletList[innz].val = vecS[innz];
     }
 
     // generate the main operator
@@ -163,7 +98,6 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
         if( std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
         {
             // set the pointer to our original underlying CSR format matrix
-            // mapOperator = primaryMapOperator;
             primaryMapOperator->move_to( mapOperator.get() );
         }
         else
@@ -192,7 +126,6 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
         if( std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
         {
             // set the pointer to our original underlying CSR format matrix
-            // mapTransposeOperator = primaryTransposeMapOperator;
             primaryTransposeMapOperator->move_to( mapTransposeOperator.get() );
         }
         else
@@ -204,6 +137,14 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
     }
 
     return;
+}
+
+template < typename MatrixType >
+bool GinkgoOperator< MatrixType >::PerformVerification( const std::vector< MOABReal >& vecAreasA,
+                                                        const std::vector< MOABReal >& vecAreasB )
+{
+    assert( vecColSum.size() == nOpCols );
+    return true;
 }
 
 template < typename MatrixType >
@@ -219,8 +160,6 @@ void GinkgoOperator< MatrixType >::PerformSpMV( int n_remap_iterations )
     {
         // Project data from source to target through weight application for each variable
         mapOperator->apply( gko::lend( srcTgt ), gko::lend( tgtSrc ) );
-        // for( auto iVar = 0; iVar < nRHSV; ++iVar )
-        // tgtSrc.col( iVar ) = primaryMapOperator * srcTgt.col( iVar );
     }
     return;
 }
@@ -240,8 +179,6 @@ void GinkgoOperator< MatrixType >::PerformSpMVTranspose( int n_remap_iterations 
     {
         // Project data from source to target through weight application for each variable
         mapTransposeOperator->apply( gko::lend( tgtSrc ), gko::lend( srcTgt ) );
-        // for( auto iVar = 0; iVar < nRHSV; ++iVar )
-        // tgtSrc.col( iVar ) = primaryMapOperator * srcTgt.col( iVar );
     }
     return;
 }
