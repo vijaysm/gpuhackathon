@@ -10,12 +10,17 @@
 // Ginkgo header files
 #include <ginkgo/ginkgo.hpp>
 
+// C++ includes
+#include <algorithm>  // std::sort, std::stable_sort
+
 // Define all supported SparseMatrix types in Ginkgo
 typedef gko::matrix::Csr< MOABReal > GinkgoCSRMatrix;
 typedef gko::matrix::Coo< MOABReal > GinkgoCOOMatrix;
 typedef gko::matrix::Ell< MOABReal > GinkgoELLMatrix;
 typedef gko::matrix::Hybrid< MOABReal > GinkgoHybridEllMatrix;
 typedef gko::matrix::Sellp< MOABReal > GinkgoSellpMatrix;
+
+// #define USE_CSR_TRANSPOSE_LINOP
 
 template < typename MatrixType >
 class GinkgoOperator : public SpMVOperator
@@ -73,6 +78,14 @@ GinkgoOperator< MatrixType >::GinkgoOperator( MOABSInt nRows, MOABSInt nCols, MO
     this->host_executor = this->device_executor->get_master();
 }
 
+// Comparison function to sort the vector elements
+// by second element of tuples
+bool sortbyrow( const gko::matrix_data< MOABReal >::nonzero_type& a,
+                const gko::matrix_data< MOABReal >::nonzero_type& b )
+{
+    return ( a.row < b.row );
+}
+
 template < typename MatrixType >
 void GinkgoOperator< MatrixType >::compute_transpose_operator( const std::vector< MOABSInt >& vecRow,
                                                                const std::vector< MOABSInt >& vecCol,
@@ -85,15 +98,20 @@ void GinkgoOperator< MatrixType >::compute_transpose_operator( const std::vector
     // loop over nnz and populate the sparse matrix operator
     for( size_t innz = 0; innz < vecS.size(); ++innz )
     {
+        // if( innz < 100 ) { std::cout << vecCol[innz] - 1 << ", " << vecRow[innz] - 1 << " = " << vecS[innz] << std::endl; }
         tripletTList.emplace_back( vecCol[innz] - 1, vecRow[innz] - 1, vecS[innz] );
     }
+    // COO format does not care about sorted row/cols to get right SpMV product; MAY AFFECT PERFORMANCE though!
+    if( !std::is_same< GinkgoCOOMatrix, MatrixType >::value )
+        std::stable_sort( tripletTList.begin(), tripletTList.end(), sortbyrow );
 
     mapTransposeOperator = MatrixType::create( device_executor );  // should this be "host_executor" ?
-    // populate the CSR sparse matrix with the matrix_data object
+    // populate the sparse matrix of requested type with the matrix_data object
     mapTransposeOperator->read( mDataT );
     return;
 }
 
+#ifdef USE_CSR_TRANSPOSE_LINOP
 template <>
 void GinkgoOperator< GinkgoCSRMatrix >::compute_transpose_operator( const std::vector< MOABSInt >& vecRow,
                                                                     const std::vector< MOABSInt >& vecCol,
@@ -101,27 +119,7 @@ void GinkgoOperator< GinkgoCSRMatrix >::compute_transpose_operator( const std::v
 {
     // Nothing to do. We will use the transpose LinOp for CSR directly
 }
-
-template <>
-void GinkgoOperator< GinkgoCOOMatrix >::compute_transpose_operator( const std::vector< MOABSInt >& vecRow,
-                                                                    const std::vector< MOABSInt >& vecCol,
-                                                                    const std::vector< MOABReal >& vecS )
-{
-    gko::matrix_data< MOABReal > mDataT( gko::dim< 2 >{ nOpCols, nOpRows } );
-    auto& tripletTList = mDataT.nonzeros;
-    tripletTList.reserve( vecS.size() );
-
-    // loop over nnz and populate the sparse matrix operator
-    for( size_t innz = 0; innz < vecS.size(); ++innz )
-    {
-        tripletTList.emplace_back( vecCol[innz] - 1, vecRow[innz] - 1, vecS[innz] );
-    }
-
-    mapTransposeOperator = GinkgoCOOMatrix::create( device_executor );  // should this be "host_executor" ?
-    // populate the CSR sparse matrix with the matrix_data object
-    mapTransposeOperator->read( mDataT );
-    return;
-}
+#endif
 
 template < typename MatrixType >
 void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >& vecRow,
@@ -129,8 +127,6 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
                                                    const std::vector< MOABReal >& vecS )
 {
     const size_t nS = vecS.size();
-
-    // populate the default CSR matrix first
 
     // first, create a triplet vector
     gko::matrix_data< MOABReal > mData( gko::dim< 2 >{ nOpRows, nOpCols } );
@@ -145,50 +141,13 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
 
     // generate the main operator
     {
-        // auto mapOperator = SpMV_DefaultMatrixType::create( this->host_executor );
-        // // populate the CSR sparse matrix with the matrix_data object
-        // primaryMapOperator->read( mData );
-
         // next, let us take care of the forward operator
         mapOperator = MatrixType::create( device_executor );  // should this be "host_executor" ?
         mapOperator->read( mData );
-        // if( std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
-        // {
-        //     // set the pointer to our original underlying CSR format matrix
-        //     primaryMapOperator->move_to( mapOperator.get() );
-        // }
-        // else
-        // {
-        //     // Perform the conversion to the format requested
-        //     std::cout << "> Converting matrix to " << this->matrix_type() << "\n ";
-        //     primaryMapOperator->convert_to( mapOperator.get() );
-        // }
     }
 
     if( enableTransposeOp )
     {
-        /*
-        mData.size = gko::dim< 2 >{ nOpCols, nOpRows };  // transpose operator sizing
-
-        // reuse the same tripletlist reference and swap row/col indices to generate transpose operator
-        // simple to use for_each algorithm with a lambda to swap
-        std::for_each( std::begin( tripletList ), std::end( tripletList ),
-                       []( auto& triplet ) { std::swap(triplet.row, triplet.column); } );
-
-        // loop over nnz and populate the sparse matrix operator
-        auto primaryTransposeMapOperator = SpMV_DefaultMatrixType::create( this->host_executor );
-        primaryTransposeMapOperator->read( mData );
-
-        // populate the default CSR matrix first
-        mapTransposeOperator = MatrixType::create( device_executor );  // should this be "host_executor" ?
-        if( !std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
-        {
-            // Perform the conversion to the format requested
-            std::cout << "> Converting tranpose matrix to " << this->matrix_type() << "\n ";
-            primaryTransposeMapOperator->convert_to( mapTransposeOperator.get() );
-        }
-        */
-
         this->compute_transpose_operator( vecRow, vecCol, vecS );
     }
 
@@ -221,6 +180,7 @@ void GinkgoOperator< MatrixType >::apply_transpose_operator( const std::unique_p
     mapTransposeOperator->apply( gko::lend( rhs ), gko::lend( result ) );
 }
 
+#ifdef USE_CSR_TRANSPOSE_LINOP
 template <>
 void GinkgoOperator< GinkgoCSRMatrix >::apply_transpose_operator( const std::unique_ptr< SpMV_VectorType >& rhs,
                                                                   std::unique_ptr< SpMV_VectorType >& result )
@@ -228,12 +188,18 @@ void GinkgoOperator< GinkgoCSRMatrix >::apply_transpose_operator( const std::uni
     auto csrTransposeOperator = mapOperator->transpose();
     csrTransposeOperator->apply( gko::lend( rhs ), gko::lend( result ) );
 }
+#endif
 
 template < typename MatrixType >
 bool GinkgoOperator< MatrixType >::PerformVerification( const std::vector< MOABReal >& vecAreasA,
                                                         const std::vector< MOABReal >& vecAreasB )
 {
-    assert( enableTransposeOp );
+    if( !enableTransposeOp )
+    {
+        std::cout << "Enable transpose operation to verify both A*x and A^T*x correctly.\n";
+        return false;
+    }
+
     assert( vecAreasA.size() == nOpCols );
     assert( vecAreasB.size() == nOpRows );
     bool isVerifiedAx = false, isVerifiedATx = false;
@@ -293,10 +259,10 @@ bool GinkgoOperator< MatrixType >::PerformVerification( const std::vector< MOABR
         // errorATxNrm /= nOpCols;
         errorATxNrm = std::sqrt( errorATxNrm );
 
-        std::cout << "srcTgtValues: " << srcTgtValues[0] << ", " << srcTgtValues[1] << ", " << srcTgtValues[2] << ", "
-                  << srcTgtValues[3] << std::endl;
-        std::cout << "reference: " << vecAreasA[0] << ", " << vecAreasA[1] << ", " << vecAreasA[2] << ", "
-                  << vecAreasA[3] << std::endl;
+        // std::cout << "srcTgtValues: " << srcTgtValues[0] << ", " << srcTgtValues[1] << ", " << srcTgtValues[2] << ", "
+        //           << srcTgtValues[3] << std::endl;
+        // std::cout << "reference: " << vecAreasA[0] << ", " << vecAreasA[1] << ", " << vecAreasA[2] << ", "
+        //           << vecAreasA[3] << std::endl;
 
         isVerifiedATx = ( errorATxNrm < 1e-12 );
         std::cout << "   > A^T*vecAreaB = vecAreaA ? " << ( isVerifiedATx ? "Yes." : "No." )
@@ -343,6 +309,7 @@ void GinkgoOperator< MatrixType >::PerformSpMVTranspose( int n_remap_iterations 
     return;
 }
 
+#ifdef USE_CSR_TRANSPOSE_LINOP
 template <>
 void GinkgoOperator< GinkgoCSRMatrix >::PerformSpMVTranspose( int n_remap_iterations )
 {
@@ -362,6 +329,7 @@ void GinkgoOperator< GinkgoCSRMatrix >::PerformSpMVTranspose( int n_remap_iterat
     }
     return;
 }
+#endif
 
 template < typename MatrixType >
 std::string GinkgoOperator< MatrixType >::matrix_type()
