@@ -7,7 +7,7 @@ EXAMPLES = spmvApp
 ALLEXAMPLES = ${EXAMPLES}
 
 # If using Kokkos-Kernels or Ginkgo, need C++14 standard; Also disable some verbose warnings.
-MOAB_CXXFLAGS += -std=c++14 -Wno-delete-non-abstract-non-virtual-dtor -Wno-sign-compare -Wno-unused-parameter
+MOAB_CXXFLAGS += -DDEBUG -std=c++14 -Wno-delete-non-abstract-non-virtual-dtor -Wno-sign-compare -Wno-unused-parameter
 
 # Help Eigen3 perform better on host by linking against OpenMP runtime
 MOAB_CXXFLAGS += -Xclang -fopenmp

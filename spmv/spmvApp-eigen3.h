@@ -117,6 +117,12 @@ bool Eigen3Operator::PerformVerification( const std::vector< MOABReal >& vecArea
         // SpMV_VectorType tgtSrc = SpMV_VectorType::Ones( nOpRows, 1 );
         Eigen::Map< const Eigen::VectorXd > tgtSrc( vecAreasB.data(), vecAreasB.size() );
 
+        // const auto tgtSrcValues = tgtSrc->get_values();
+        // std::cout << "tgtSrcValues: " << tgtSrc( 10 ) << ", " << tgtSrc( 30 ) << ", " << tgtSrc( 200 ) << ", "
+        //           << tgtSrc( 399 ) << std::endl;
+        // std::cout << "reference: " << vecAreasB[10] << ", " << vecAreasB[30] << ", " << vecAreasB[200] << ", "
+        //           << vecAreasB[399] << std::endl;
+
         // Perform the tranpose SpMV operation
         if( enableTransposeOp ) { srcTgt = mapTransposeOperator * tgtSrc; }
         else
@@ -125,6 +131,10 @@ bool Eigen3Operator::PerformVerification( const std::vector< MOABReal >& vecArea
             srcTgt                       = transposeMap * tgtSrc;
         }
 
+        // std::cout << "srcTgtValues: " << srcTgt(0) << ", " << srcTgt(1) << ", " << srcTgt(2) << ", " << srcTgt(3)
+        //           << std::endl;
+        // std::cout << "reference: " << vecAreasA[0] << ", " << vecAreasA[1] << ", " << vecAreasA[2] << ", "
+        //           << vecAreasA[3] << std::endl;
         Eigen::Map< const Eigen::VectorXd > refVector( vecAreasA.data(), vecAreasA.size() );
         SpMV_VectorType errorATx = srcTgt - refVector;
         isVerifiedATx            = (errorATx.norm() < 1e-12);

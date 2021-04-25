@@ -39,6 +39,12 @@ class GinkgoOperator : public SpMVOperator
     std::string matrix_type();
 
   private:
+    void compute_transpose_operator( const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
+                                     const std::vector< MOABReal >& vecS );
+    void apply_operator( const std::unique_ptr< SpMV_VectorType >& rhs, std::unique_ptr< SpMV_VectorType >& result );
+    void apply_transpose_operator( const std::unique_ptr< SpMV_VectorType >& rhs,
+                                   std::unique_ptr< SpMV_VectorType >& result );
+
     std::string executor_string;
     std::shared_ptr< gko::Executor > device_executor;
     std::shared_ptr< gko::Executor > host_executor;
@@ -68,6 +74,56 @@ GinkgoOperator< MatrixType >::GinkgoOperator( MOABSInt nRows, MOABSInt nCols, MO
 }
 
 template < typename MatrixType >
+void GinkgoOperator< MatrixType >::compute_transpose_operator( const std::vector< MOABSInt >& vecRow,
+                                                               const std::vector< MOABSInt >& vecCol,
+                                                               const std::vector< MOABReal >& vecS )
+{
+    gko::matrix_data< MOABReal > mDataT( gko::dim< 2 >{ nOpCols, nOpRows } );
+    auto& tripletTList = mDataT.nonzeros;
+    tripletTList.reserve( vecS.size() );
+
+    // loop over nnz and populate the sparse matrix operator
+    for( size_t innz = 0; innz < vecS.size(); ++innz )
+    {
+        tripletTList.emplace_back( vecCol[innz] - 1, vecRow[innz] - 1, vecS[innz] );
+    }
+
+    mapTransposeOperator = MatrixType::create( device_executor );  // should this be "host_executor" ?
+    // populate the CSR sparse matrix with the matrix_data object
+    mapTransposeOperator->read( mDataT );
+    return;
+}
+
+template <>
+void GinkgoOperator< GinkgoCSRMatrix >::compute_transpose_operator( const std::vector< MOABSInt >& vecRow,
+                                                                    const std::vector< MOABSInt >& vecCol,
+                                                                    const std::vector< MOABReal >& vecS )
+{
+    // Nothing to do. We will use the transpose LinOp for CSR directly
+}
+
+template <>
+void GinkgoOperator< GinkgoCOOMatrix >::compute_transpose_operator( const std::vector< MOABSInt >& vecRow,
+                                                                    const std::vector< MOABSInt >& vecCol,
+                                                                    const std::vector< MOABReal >& vecS )
+{
+    gko::matrix_data< MOABReal > mDataT( gko::dim< 2 >{ nOpCols, nOpRows } );
+    auto& tripletTList = mDataT.nonzeros;
+    tripletTList.reserve( vecS.size() );
+
+    // loop over nnz and populate the sparse matrix operator
+    for( size_t innz = 0; innz < vecS.size(); ++innz )
+    {
+        tripletTList.emplace_back( vecCol[innz] - 1, vecRow[innz] - 1, vecS[innz] );
+    }
+
+    mapTransposeOperator = GinkgoCOOMatrix::create( device_executor );  // should this be "host_executor" ?
+    // populate the CSR sparse matrix with the matrix_data object
+    mapTransposeOperator->read( mDataT );
+    return;
+}
+
+template < typename MatrixType >
 void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >& vecRow,
                                                    const std::vector< MOABSInt >& vecCol,
                                                    const std::vector< MOABReal >& vecS )
@@ -77,7 +133,7 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
     // populate the default CSR matrix first
 
     // first, create a triplet vector
-    gko::matrix_data< MOABReal > mData( gko::dim< 2 >( nOpRows, nOpCols ) );
+    gko::matrix_data< MOABReal > mData( gko::dim< 2 >{ nOpRows, nOpCols } );
     auto& tripletList = mData.nonzeros;
     tripletList.reserve( nS );
 
@@ -89,28 +145,30 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
 
     // generate the main operator
     {
-        auto primaryMapOperator = SpMV_DefaultMatrixType::create( this->host_executor );
-        // populate the CSR sparse matrix with the matrix_data object
-        primaryMapOperator->read( mData );
+        // auto mapOperator = SpMV_DefaultMatrixType::create( this->host_executor );
+        // // populate the CSR sparse matrix with the matrix_data object
+        // primaryMapOperator->read( mData );
 
         // next, let us take care of the forward operator
         mapOperator = MatrixType::create( device_executor );  // should this be "host_executor" ?
-        if( std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
-        {
-            // set the pointer to our original underlying CSR format matrix
-            primaryMapOperator->move_to( mapOperator.get() );
-        }
-        else
-        {
-            // Perform the conversion to the format requested
-            std::cout << "> Converting matrix to " << this->matrix_type() << "\n ";
-            primaryMapOperator->convert_to( mapOperator.get() );
-        }
+        mapOperator->read( mData );
+        // if( std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
+        // {
+        //     // set the pointer to our original underlying CSR format matrix
+        //     primaryMapOperator->move_to( mapOperator.get() );
+        // }
+        // else
+        // {
+        //     // Perform the conversion to the format requested
+        //     std::cout << "> Converting matrix to " << this->matrix_type() << "\n ";
+        //     primaryMapOperator->convert_to( mapOperator.get() );
+        // }
     }
 
     if( enableTransposeOp )
     {
-        mData.size = gko::dim< 2 >( nOpCols, nOpRows );  // transpose operator sizing
+        /*
+        mData.size = gko::dim< 2 >{ nOpCols, nOpRows };  // transpose operator sizing
 
         // reuse the same tripletlist reference and swap row/col indices to generate transpose operator
         // simple to use for_each algorithm with a lambda to swap
@@ -123,43 +181,145 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
 
         // populate the default CSR matrix first
         mapTransposeOperator = MatrixType::create( device_executor );  // should this be "host_executor" ?
-        if( std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
-        {
-            // set the pointer to our original underlying CSR format matrix
-            primaryTransposeMapOperator->move_to( mapTransposeOperator.get() );
-        }
-        else
+        if( !std::is_same< SpMV_DefaultMatrixType, MatrixType >::value )
         {
             // Perform the conversion to the format requested
             std::cout << "> Converting tranpose matrix to " << this->matrix_type() << "\n ";
             primaryTransposeMapOperator->convert_to( mapTransposeOperator.get() );
         }
+        */
+
+        this->compute_transpose_operator( vecRow, vecCol, vecS );
     }
 
     return;
+}
+
+// template < typename MatrixType >
+// bool GinkgoOperator< MatrixType >::PerformVerification( const std::vector< MOABReal >& vecAreasA,
+//                                                         const std::vector< MOABReal >& vecAreasB )
+// {
+//     if( !std::is_same< GinkgoCSRMatrix, MatrixType >::value )
+//     {
+//         std::cout << "Please use ginkgo:CSR as the matrix format type to perform verifications." << std::endl;
+//         return false;
+//     }
+//     return false;
+// }
+
+template < typename MatrixType >
+void GinkgoOperator< MatrixType >::apply_operator( const std::unique_ptr< SpMV_VectorType >& rhs,
+                                                   std::unique_ptr< SpMV_VectorType >& result )
+{
+    mapOperator->apply( gko::lend( rhs ), gko::lend( result ) );
+}
+
+template < typename MatrixType >
+void GinkgoOperator< MatrixType >::apply_transpose_operator( const std::unique_ptr< SpMV_VectorType >& rhs,
+                                                             std::unique_ptr< SpMV_VectorType >& result )
+{
+    mapTransposeOperator->apply( gko::lend( rhs ), gko::lend( result ) );
+}
+
+template <>
+void GinkgoOperator< GinkgoCSRMatrix >::apply_transpose_operator( const std::unique_ptr< SpMV_VectorType >& rhs,
+                                                                  std::unique_ptr< SpMV_VectorType >& result )
+{
+    auto csrTransposeOperator = mapOperator->transpose();
+    csrTransposeOperator->apply( gko::lend( rhs ), gko::lend( result ) );
 }
 
 template < typename MatrixType >
 bool GinkgoOperator< MatrixType >::PerformVerification( const std::vector< MOABReal >& vecAreasA,
                                                         const std::vector< MOABReal >& vecAreasB )
 {
-    assert( vecColSum.size() == nOpCols );
-    return true;
+    assert( enableTransposeOp );
+    assert( vecAreasA.size() == nOpCols );
+    assert( vecAreasB.size() == nOpRows );
+    bool isVerifiedAx = false, isVerifiedATx = false;
+
+    using val_array = gko::Array< MOABReal >;
+
+    std::cout << "\nPerforming A*x and A^T*x accuracy verifications" << std::endl;
+    // Define temporary vectors to compute matrix-vector products
+    {
+        auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpCols, 1 } );
+        auto tgtSrc = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpRows, 1 } );
+        srcTgt->fill( 1.0 );
+        tgtSrc->fill( 0.0 );
+
+        // Perform the SpMV operation
+        this->apply_operator( srcTgt, tgtSrc );
+
+        // compute the error in the A*x application
+        const auto tgtSrcValues = tgtSrc->get_values();
+        MOABReal errorAxNrm     = 0.0;
+        for( auto ind = 0; ind < nOpRows; ++ind )
+        {
+            const MOABReal errorAx = ( 1.0 - tgtSrcValues[ind] );
+            errorAxNrm += errorAx * errorAx;
+        }
+        // errorAxNrm /= nOpRows;
+        errorAxNrm = std::sqrt( errorAxNrm );
+
+        isVerifiedAx = ( errorAxNrm < 1e-6 );
+        std::cout << "   > A*[ones] = ones ? " << ( isVerifiedAx ? "Yes." : "No." )
+                  << " Error||A*[ones] - [ones]||_2 = " << errorAxNrm << std::endl;
+    }
+
+    {
+        auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpCols, 1 } );
+        auto tgtSrc = SpMV_VectorType::create(
+            device_executor, gko::dim< 2 >( nOpRows, 1 ),
+            val_array::view( host_executor, nOpRows, const_cast< MOABReal* >( vecAreasB.data() ) ), 1 );
+        srcTgt->fill( 0.0 );
+
+        // const auto tgtSrcValues = tgtSrc->get_values();
+        // std::cout << "tgtSrcValues: " << tgtSrcValues[10] << ", " << tgtSrcValues[30] << ", " << tgtSrcValues[200] <<
+        // ", "
+        //           << tgtSrcValues[399] << std::endl;
+        // std::cout << "reference: " << vecAreasB[10] << ", " << vecAreasB[30] << ", " << vecAreasB[200] << ", "
+        //           << vecAreasB[399] << std::endl;
+
+        this->apply_transpose_operator( tgtSrc, srcTgt );
+
+        const auto srcTgtValues = srcTgt->get_values();
+        MOABReal errorATxNrm    = 0.0;
+        for( auto ind = 0; ind < nOpCols; ++ind )
+        {
+            const MOABReal errorATx = ( vecAreasA[ind] - srcTgtValues[ind] );
+            errorATxNrm += errorATx * errorATx;
+        }
+        // errorATxNrm /= nOpCols;
+        errorATxNrm = std::sqrt( errorATxNrm );
+
+        std::cout << "srcTgtValues: " << srcTgtValues[0] << ", " << srcTgtValues[1] << ", " << srcTgtValues[2] << ", "
+                  << srcTgtValues[3] << std::endl;
+        std::cout << "reference: " << vecAreasA[0] << ", " << vecAreasA[1] << ", " << vecAreasA[2] << ", "
+                  << vecAreasA[3] << std::endl;
+
+        isVerifiedATx = ( errorATxNrm < 1e-12 );
+        std::cout << "   > A^T*vecAreaB = vecAreaA ? " << ( isVerifiedATx ? "Yes." : "No." )
+                  << " Error||A^T*vecAreaB - vecAreaA||_2 = " << errorATxNrm << std::endl;
+    }
+    std::cout << std::endl;
+
+    return ( isVerifiedAx && isVerifiedATx );
 }
 
 template < typename MatrixType >
 void GinkgoOperator< MatrixType >::PerformSpMV( int n_remap_iterations )
 {
     // multiple RHS for each variable to be projected
-    auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >( nOpCols, nRHSV ) );
+    auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpCols, nRHSV } );
     srcTgt->fill( 1.0 );
-    auto tgtSrc = SpMV_VectorType::create( device_executor, gko::dim< 2 >( nOpRows, nRHSV ) );
+    auto tgtSrc = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpRows, nRHSV } );
     tgtSrc->fill( 0.0 );
 
     for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
         // Project data from source to target through weight application for each variable
-        mapOperator->apply( gko::lend( srcTgt ), gko::lend( tgtSrc ) );
+        this->apply_operator( srcTgt, tgtSrc );
     }
     return;
 }
@@ -170,15 +330,35 @@ void GinkgoOperator< MatrixType >::PerformSpMVTranspose( int n_remap_iterations 
     assert( enableTransposeOp );
 
     // multiple RHS for each variable to be projected
-    auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >( nOpCols, nRHSV ) );
+    auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpCols, nRHSV } );
     srcTgt->fill( 0.0 );
-    auto tgtSrc = SpMV_VectorType::create( device_executor, gko::dim< 2 >( nOpRows, nRHSV ) );
+    auto tgtSrc = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpRows, nRHSV } );
     tgtSrc->fill( 1.0 );
 
     for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
         // Project data from source to target through weight application for each variable
-        mapTransposeOperator->apply( gko::lend( tgtSrc ), gko::lend( srcTgt ) );
+        this->apply_transpose_operator( tgtSrc, srcTgt );
+    }
+    return;
+}
+
+template <>
+void GinkgoOperator< GinkgoCSRMatrix >::PerformSpMVTranspose( int n_remap_iterations )
+{
+    assert( enableTransposeOp );
+
+    // multiple RHS for each variable to be projected
+    auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpCols, nRHSV } );
+    srcTgt->fill( 0.0 );
+    auto tgtSrc = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpRows, nRHSV } );
+    tgtSrc->fill( 1.0 );
+
+    auto csrTransposeOperator = mapOperator->transpose();
+    for( auto iR = 0; iR < n_remap_iterations; ++iR )
+    {
+        // Project data from source to target through weight application for each variable
+        csrTransposeOperator->apply( gko::lend( tgtSrc ), gko::lend( srcTgt ) );
     }
     return;
 }
@@ -196,7 +376,8 @@ std::string GinkgoOperator< MatrixType >::matrix_type()
         return "Hybrid";
     else if( std::is_same< GinkgoSellpMatrix, MatrixType >::value )
         return "SELL-P";
-    else return "ERROR: Unknown matrix type";
+    else
+        return "ERROR: Unknown matrix type";
 }
 
 #endif  //  __SPMVAPP_GINKGO_H__
