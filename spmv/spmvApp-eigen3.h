@@ -176,7 +176,7 @@ void Eigen3Operator::PerformSpMVTranspose( int n_remap_iterations )
     for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
         // Project data from target to source through transpose application for each variable
-        srcTgt = mapOperator * tgtSrc;
+        srcTgt = mapTransposeOperator * tgtSrc;
 // #pragma omp parallel for
 //         for( auto iVar = 0; iVar < nRHSV; ++iVar )
 //             srcTgt.col( iVar ) = mapTransposeOperator * tgtSrc.col( iVar );

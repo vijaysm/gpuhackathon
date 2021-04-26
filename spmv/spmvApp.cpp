@@ -31,7 +31,7 @@
 // Defines for LA experiments
 #define USE_EIGEN3
 #define USE_GINKGO
-// #define USE_KOKKOS
+#define USE_KOKKOS
 
 #ifdef USE_EIGEN3
 #include "spmvApp-eigen3.h"
@@ -205,8 +205,10 @@ std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily,
     else if( !package.compare( "kokkos" ) )
     {
         std::cout << "> Building the Kokkos-Kernels *CSR* operator\n";
+        using device_type = typename Kokkos::Device< Kokkos::DefaultExecutionSpace,
+                                                     typename Kokkos::DefaultExecutionSpace::memory_space >;
         return std::unique_ptr< SpMVOperator >(
-            new KokkosKernelsOperator( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+            new KokkosKernelOperator< device_type >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
     }
 #endif
     else
