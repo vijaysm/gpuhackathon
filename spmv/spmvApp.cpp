@@ -41,6 +41,10 @@
 #include "spmvApp-ginkgo.h"
 #endif
 
+#ifdef USE_KOKKOS
+#include "spmvApp-kokkos.h"
+#endif
+
 // C++ includes
 #include <iostream>
 
@@ -84,6 +88,10 @@ int main( int argc, char** argv )
                              &n_remap_iterations );
 
     opts.parseCommandLine( argc, argv );
+
+#ifdef USE_KOKKOS
+    Kokkos::initialize( argc, argv );
+#endif
 
     // Print problem parameter details
     std::cout << "    SpMV-Remap Application" << std::endl;
