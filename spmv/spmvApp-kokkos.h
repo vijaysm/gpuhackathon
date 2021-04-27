@@ -38,7 +38,8 @@ class KokkosKernelOperator : public SpMVOperator
     typedef KokkosSparse::CrsMatrix< Scalar, Ordinal, device_type, void, Offset > SpMV_DefaultMatrixType;
     using values_type = typename SpMV_MatrixType::values_type;
 
-    typedef typename values_type::non_const_type SpMV_VectorType;
+    // typedef typename values_type::non_const_type SpMV_VectorType;
+    typedef Kokkos::View< Scalar**, Kokkos::LayoutRight > SpMV_VectorType;
 
     // HELP: https://github.com/kokkos/kokkos-kernels/blob/master/example/wiki/sparse/KokkosSparse_wiki_crsmatrix.cpp
 
@@ -55,8 +56,12 @@ class KokkosKernelOperator : public SpMVOperator
     virtual void PerformSpMV( int n_remap_iterations = 1 );
     virtual void PerformSpMVTranspose( int n_remap_iterations = 1 );
 
-    const Scalar SC_ONE = Kokkos::ArithTraits< Scalar >::one();
-    const Scalar SC_ZERO = Kokkos::ArithTraits< Scalar >::zero();
+    private:
+      void apply_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result );
+      void apply_transpose_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result );
+
+      const Scalar SC_ONE  = Kokkos::ArithTraits< Scalar >::one();
+      const Scalar SC_ZERO = Kokkos::ArithTraits< Scalar >::zero();
 };
 
 template < typename Device >
@@ -76,6 +81,8 @@ void KokkosKernelOperator< Device >::CreateOperator( const std::vector< MOABSInt
     using row_map_type = typename graph_type::row_map_type;
     using entries_type = typename graph_type::entries_type;
     using values_type  = typename SpMV_MatrixType::values_type;
+
+    size_t nNNZ = vecS.size();
 
     // build the primary operator
     {
@@ -103,14 +110,15 @@ void KokkosKernelOperator< Device >::CreateOperator( const std::vector< MOABSInt
         typename values_type::HostMirror values_h = Kokkos::create_mirror_view( values );
         for( size_t ind = 0; ind < vecS.size(); ++ind )
         {
-            entries_h( ind ) = vecCol[ind];
+            entries_h( ind ) = vecCol[ind]-1;
             values_h( ind )  = vecS[ind];
         }
         Kokkos::deep_copy( entries, entries_h );
         Kokkos::deep_copy( values, values_h );
 
-        graph_type myGraph( entries, row_map );
-        mapOperator = SpMV_MatrixType( "Primary operator", nOpRows, values, myGraph );
+        // graph_type myGraph( entries, row_map );
+        // mapOperator = SpMV_MatrixType( "Primary operator", nOpRows, values, myGraph );
+        mapOperator = SpMV_MatrixType( "Primary operator", nOpRows, nOpCols, nNNZ, values, row_map, entries );
     }
 
     // store the transpose operator as well if requested
@@ -151,14 +159,15 @@ void KokkosKernelOperator< Device >::CreateOperator( const std::vector< MOABSInt
         typename values_type::HostMirror values_h = Kokkos::create_mirror_view( values );
         for( size_t ind = 0; ind < vecS.size(); ++ind )
         {
-            entries_h( ind ) = vecRow[idx[ind]];
+            entries_h( ind ) = vecRow[idx[ind]]-1;
             values_h( ind )  = vecS[idx[ind]];
         }
         Kokkos::deep_copy( entries, entries_h );
         Kokkos::deep_copy( values, values_h );
 
-        graph_type myGraph( entries, row_map );
-        mapTransposeOperator = SpMV_MatrixType( "Transpose operator", nOpCols, values, myGraph );
+        // graph_type myGraph( entries, row_map );
+        // mapTransposeOperator = SpMV_MatrixType( "Transpose operator", nOpCols, nOpRows, values, myGraph );
+        mapTransposeOperator = SpMV_MatrixType( "Transpose operator", nOpCols, nOpRows, nNNZ, values, row_map, entries );
     }
     return;
 }
@@ -167,28 +176,44 @@ template < typename Device >
 bool KokkosKernelOperator< Device >::PerformVerification( const std::vector< MOABReal >& vecAreasA,
                                                                         const std::vector< MOABReal >& vecAreasB )
 {
+    if( !enableTransposeOp )
+    {
+        std::cout << "Enable transpose operation to verify both A*x and A^T*x correctly.\n";
+        return false;
+    }
+
     assert( vecColSum.size() == nOpCols );
     bool isVerifiedAx = false, isVerifiedATx = false;
 
-    /*
     std::cout << "\nPerforming A*x and A^T*x accuracy verifications" << std::endl;
     // Define temporary vectors to compute matrix-vector products
     {
-        SpMV_VectorType srcTgt = SpMV_VectorType::Ones( nOpCols, 1 );
-        SpMV_VectorType tgtSrc = SpMV_VectorType::Zero( nOpRows, 1 );
+        SpMV_VectorType srcTgt( "lhs", nOpCols, 1 );  // srcTgt = 1.0
+        for( int iR = 0; iR < nOpCols; ++iR )
+            srcTgt( iR, 0 ) = 1.0;
+        SpMV_VectorType tgtSrc( "rhs", nOpRows, 1 );  // tgtSrc = 0.0
+        for( int iR = 0; iR < nOpRows; ++iR )
+            tgtSrc( iR, 0 ) = 0.0;
 
         // Perform the SpMV operation
-        tgtSrc                  = mapOperator * srcTgt;
-        isVerifiedAx            = tgtSrc.isOnes( 1e-6 );
-        SpMV_VectorType errorAx = tgtSrc - SpMV_VectorType::Ones( nOpRows, 1 );
+        this->apply_operator( srcTgt, tgtSrc );
+        Scalar errorAx = 0.0;
+        for( int iR = 0; iR < nOpRows; ++iR )
+            errorAx += std::pow( tgtSrc( iR, 0 ) - 1.0, 2.0 );
+        errorAx = std::sqrt( errorAx );
+        isVerifiedAx = ( errorAx < 1e-6 );
         std::cout << "   > A*[ones] = ones ? " << ( isVerifiedAx ? "Yes." : "No." )
-                  << " Error||A*[ones] - [ones]||_2 = " << errorAx.norm() << std::endl;
+                  << " Error||A*[ones] - [ones]||_2 = " << errorAx << std::endl;
     }
 
+
     {
-        SpMV_VectorType srcTgt = SpMV_VectorType::Zero( nOpCols, 1 );
-        // SpMV_VectorType tgtSrc = SpMV_VectorType::Ones( nOpRows, 1 );
-        Eigen::Map< const Eigen::VectorXd > tgtSrc( vecAreasB.data(), vecAreasB.size() );
+        SpMV_VectorType srcTgt( "lhs", nOpCols, 1 );  // srcTgt = 0.0
+        for( int iR = 0; iR < nOpCols; ++iR )
+            srcTgt( iR, 0 ) = 0.0;
+        SpMV_VectorType tgtSrc( "rhs", nOpRows, 1 );  // tgtSrc = vecAreasB = target areas
+        for( int iR = 0; iR < nOpRows; ++iR )
+            tgtSrc( iR, 0 ) = vecAreasB[iR];
 
         // const auto tgtSrcValues = tgtSrc->get_values();
         // std::cout << "tgtSrcValues: " << tgtSrc( 10 ) << ", " << tgtSrc( 30 ) << ", " << tgtSrc( 200 ) << ", "
@@ -197,27 +222,43 @@ bool KokkosKernelOperator< Device >::PerformVerification( const std::vector< MOA
         //           << vecAreasB[399] << std::endl;
 
         // Perform the tranpose SpMV operation
-        if( enableTransposeOp ) { srcTgt = mapTransposeOperator * tgtSrc; }
-        else
-        {
-            SpMV_MatrixType transposeMap = mapOperator.transpose();
-            srcTgt                       = transposeMap * tgtSrc;
-        }
+        this->apply_transpose_operator( tgtSrc, srcTgt );
 
-        // std::cout << "srcTgtValues: " << srcTgt(0) << ", " << srcTgt(1) << ", " << srcTgt(2) << ", " << srcTgt(3)
-        //           << std::endl;
-        // std::cout << "reference: " << vecAreasA[0] << ", " << vecAreasA[1] << ", " << vecAreasA[2] << ", "
-        //           << vecAreasA[3] << std::endl;
-        // Eigen::Map< const Eigen::VectorXd > refVector( vecAreasA.data(), vecAreasA.size() );
-        // SpMV_VectorType errorATx = srcTgt - refVector;
-        // isVerifiedATx            = (errorATx.norm() < 1e-12);
-        // std::cout << "   > A^T*vecAreaB = vecAreaA ? " << ( isVerifiedATx ? "Yes." : "No." )
-        //           << " Error||A^T*vecAreaB - vecAreaA||_2 = " << errorATx.norm() << std::endl;
+        std::cout << "srcTgtValues: " << srcTgt( 0, 0 ) << ", " << srcTgt( 1, 0 ) << ", " << srcTgt( 2, 0 ) << ", "
+                  << srcTgt( 3, 0 ) << std::endl;
+        std::cout << "reference: " << vecAreasA[0] << ", " << vecAreasA[1] << ", " << vecAreasA[2] << ", "
+                  << vecAreasA[3] << std::endl;
+
+        Scalar errorATx = 0.0;
+        for( int iR = 0; iR < nOpCols; ++iR )
+            errorATx += std::pow( srcTgt( iR, 0 ) - vecAreasA[iR], 2.0 );  // now srcTgt = reference vector
+        errorATx = std::sqrt( errorATx );
+
+        isVerifiedATx            = (errorATx < 1e-12);
+        std::cout << "   > A^T*vecAreaB = vecAreaA ? " << ( isVerifiedATx ? "Yes." : "No." )
+                  << " Error||A^T*vecAreaB - vecAreaA||_2 = " << errorATx << std::endl;
     }
     std::cout << std::endl;
-    */
+
 
     return ( isVerifiedAx && isVerifiedATx );
+}
+
+template < typename Device >
+void KokkosKernelOperator< Device >::apply_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result )
+{
+    const Scalar alpha = SC_ONE;
+    const Scalar beta  = SC_ZERO;
+    KokkosSparse::spmv( "N", alpha, mapOperator, rhs, beta, result );
+}
+
+template < typename Device >
+void KokkosKernelOperator< Device >::apply_transpose_operator( const SpMV_VectorType& rhs,
+                                                                    SpMV_VectorType& result )
+{
+    const Scalar alpha = SC_ONE;
+    const Scalar beta  = SC_ZERO;
+    KokkosSparse::spmv( "N", alpha, mapTransposeOperator, rhs, beta, result );
 }
 
 template < typename Device >
@@ -226,18 +267,21 @@ void KokkosKernelOperator< Device >::PerformSpMV( int n_remap_iterations )
     // Perform SpMV from Source to Target through operator application
     // multiply RHS for each variable to be projected
     SpMV_VectorType srcTgt( "lhs", nOpCols, nRHSV );  // srcTgt = 1.0
-    for( auto iR = 0; iR < nOpCols; ++iR )
-        srcTgt(iR) = 1.0;
+    for( int iR = 0; iR < nOpCols; ++iR )
+        for( int iV = 0; iV < nRHSV; ++iV )
+            srcTgt( iR, iV ) = 1.0;
     SpMV_VectorType tgtSrc( "rhs", nOpRows, nRHSV );  // tgtSrc = 0.0
-    for( auto iR = 0; iR < nOpRows; ++iR )
-        tgtSrc( iR ) = 0.0;
+    for( int iR = 0; iR < nOpRows; ++iR )
+        for( int iV = 0; iV < nRHSV; ++iV )
+            tgtSrc( iR, iV ) = 0.0;
 
-    const Scalar alpha = SC_ONE;
-    const Scalar beta  = SC_ZERO;
+    // const Scalar alpha = SC_ONE;
+    // const Scalar beta  = SC_ZERO;
     for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
         // Project data from source to target through weight application for each variable
-        KokkosSparse::spmv( "N", alpha, mapOperator, srcTgt, beta, tgtSrc );
+        // KokkosSparse::spmv( "N", alpha, mapOperator, srcTgt, beta, tgtSrc );
+        this->apply_operator( srcTgt, tgtSrc );
     }
     return;
 }
@@ -249,18 +293,21 @@ void KokkosKernelOperator< Device >::PerformSpMVTranspose( int n_remap_iteration
     // Perform SpMV from Target to Source through transpose operator application
     // multiple RHS for each variable to be projected
     SpMV_VectorType srcTgt( "lhs", nOpCols, nRHSV );  // srcTgt = 0.0
-    for( auto iR = 0; iR < nOpCols; ++iR )
-        srcTgt( iR ) = 0.0;
+    for( int iR = 0; iR < nOpCols; ++iR )
+        for( int iV = 0; iV < nRHSV; ++iV )
+            srcTgt( iR, iV ) = 0.0;
     SpMV_VectorType tgtSrc( "rhs", nOpRows, nRHSV );  // tgtSrc = 1.0
-    for( auto iR = 0; iR < nOpRows; ++iR )
-        tgtSrc( iR ) = 1.0;
+    for( int iR = 0; iR < nOpRows; ++iR )
+        for( int iV = 0; iV < nRHSV; ++iV )
+            tgtSrc( iR, iV ) = 1.0;
 
-    const Scalar alpha = SC_ONE;
-    const Scalar beta  = SC_ZERO;
+    // const Scalar alpha = SC_ONE;
+    // const Scalar beta  = SC_ZERO;
     for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
         // Project data from target to source through transpose application for each variable
-        KokkosSparse::spmv( "N", alpha, mapTransposeOperator, tgtSrc, beta, srcTgt );
+        // KokkosSparse::spmv( "N", alpha, mapTransposeOperator, tgtSrc, beta, srcTgt );
+        this->apply_transpose_operator( tgtSrc, srcTgt );
     }
     return;
 }
