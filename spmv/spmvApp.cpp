@@ -29,9 +29,9 @@
 #include "spmvAppUtils.h"
 
 // Defines for LA experiments
-#define USE_EIGEN3
-#define USE_GINKGO
-#define USE_KOKKOS
+//#define USE_EIGEN3
+//#define USE_GINKGO
+//#define USE_KOKKOS
 
 #ifdef USE_EIGEN3
 #include "spmvApp-eigen3.h"
@@ -47,6 +47,8 @@
 
 // C++ includes
 #include <iostream>
+#include <memory>
+#include <cassert>
 
 moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< MOABSInt >& vecRow,
                                    std::vector< MOABSInt >& vecCol, std::vector< MOABReal >& vecS,
