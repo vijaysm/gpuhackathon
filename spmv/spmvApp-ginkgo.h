@@ -20,7 +20,7 @@ typedef gko::matrix::Ell< MOABReal > GinkgoELLMatrix;
 typedef gko::matrix::Hybrid< MOABReal > GinkgoHybridEllMatrix;
 typedef gko::matrix::Sellp< MOABReal > GinkgoSellpMatrix;
 
-// #define USE_CSR_TRANSPOSE_LINOP
+#define USE_CSR_TRANSPOSE_LINOP
 
 template < typename MatrixType >
 class GinkgoOperator : public SpMVOperator
@@ -32,7 +32,7 @@ class GinkgoOperator : public SpMVOperator
     typedef GinkgoCSRMatrix SpMV_DefaultMatrixType;
 
     GinkgoOperator( MOABSInt nOpRows, MOABSInt nOpCols, MOABSInt nOpNNZs, MOABSInt nVecs,
-                    bool requireTransposeOp = false, const std::string exec_string = "omp" );
+                    bool requireTransposeOp = false, const std::string exec_string = "cuda" );
     virtual ~GinkgoOperator(){};  // TODO: clear operator memory
     void CreateOperator( const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
                          const std::vector< MOABReal >& vecS );
@@ -122,6 +122,18 @@ void GinkgoOperator< GinkgoCSRMatrix >::compute_transpose_operator( const std::v
 #endif
 
 template < typename MatrixType >
+void set_options( std::unique_ptr<MatrixType>& mat)
+{
+}
+
+template <>
+void set_options< GinkgoCSRMatrix >( std::unique_ptr<GinkgoCSRMatrix>& mat )
+{
+  mat->set_strategy( GinkgoCSRMatrix::automatical().copy() );
+}
+
+
+template < typename MatrixType >
 void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >& vecRow,
                                                    const std::vector< MOABSInt >& vecCol,
                                                    const std::vector< MOABReal >& vecS )
@@ -144,6 +156,8 @@ void GinkgoOperator< MatrixType >::CreateOperator( const std::vector< MOABSInt >
         // next, let us take care of the forward operator
         mapOperator = MatrixType::create( device_executor );  // should this be "host_executor" ?
         mapOperator->read( mData );
+        //mapOperator->set_strategy( gko::matrix::CSR::strategy_type().copy() );
+        set_options( mapOperator );
     }
 
     if( enableTransposeOp )
