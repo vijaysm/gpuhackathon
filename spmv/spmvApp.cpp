@@ -226,8 +226,8 @@ std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily,
 
         if( !executorType.compare( "omp" ) )
         {
-            using device_type = typename Kokkos::Device< Kokkos::DefaultHostExecutionSpace,
-                                                         typename Kokkos::DefaultHostExecutionSpace::memory_space >;
+            using device_type = typename Kokkos::Device< Kokkos::DefaultExecutionSpace,
+                                                         typename Kokkos::DefaultExecutionSpace::memory_space >;
             return std::unique_ptr< SpMVOperator >(
                 new KokkosKernelOperator< device_type >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
         }
