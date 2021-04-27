@@ -164,11 +164,18 @@ int main( int argc, char** argv )
                       << " and SpMV-Transpose(" << rhsvsize << ") = " << totalTCPU_MS / ( n_remap_iterations )
                       << std::endl;
         }
+
+        // Free the operator memory and references
+        opImpl.reset();
     }
     else
     {
         std::cout << "Nothing to do. Please enable Eigen3, Kokkos-Kernels or Ginkgo to perform the benchmark tests.\n";
     }
+
+#ifdef USE_KOKKOS
+    Kokkos::finalize();
+#endif
 
     return 0;
 }
