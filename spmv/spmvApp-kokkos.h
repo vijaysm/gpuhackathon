@@ -10,6 +10,7 @@
 
 // C++ includes
 #include <algorithm>
+#include <numeric>
 
 // Kokkos includes
 #include <Kokkos_Core.hpp>
@@ -39,7 +40,8 @@ class KokkosKernelOperator : public SpMVOperator
     using values_type = typename SpMV_MatrixType::values_type;
 
     // typedef typename values_type::non_const_type SpMV_VectorType;
-    typedef Kokkos::View< Scalar**, Kokkos::LayoutRight > SpMV_VectorType;
+    typedef Kokkos::View< Scalar**, execution_space > SpMV_VectorType;
+    typedef Kokkos::View< Scalar**, Kokkos::DefaultHostExecutionSpace > SpMV_VectorTypeHost;
 
     // HELP: https://github.com/kokkos/kokkos-kernels/blob/master/example/wiki/sparse/KokkosSparse_wiki_crsmatrix.cpp
 
@@ -69,6 +71,7 @@ KokkosKernelOperator< Device >::KokkosKernelOperator( MOABSInt nRows, MOABSInt n
                                                                     MOABSInt nRHSV, bool requireTransposeOp )
     : SpMVOperator( nRows, nCols, nNNZs, nRHSV, requireTransposeOp )
 {
+    std::cout << "device_type: " << execution_space::name() << std::endl;
 }
 
 template < typename Device >
@@ -184,7 +187,7 @@ bool KokkosKernelOperator< Device >::PerformVerification( const std::vector< MOA
 
     assert( vecColSum.size() == nOpCols );
     bool isVerifiedAx = false, isVerifiedATx = false;
-
+/*
     std::cout << "\nPerforming A*x and A^T*x accuracy verifications" << std::endl;
     // Define temporary vectors to compute matrix-vector products
     {
@@ -240,7 +243,7 @@ bool KokkosKernelOperator< Device >::PerformVerification( const std::vector< MOA
     }
     std::cout << std::endl;
 
-
+*/
     return ( isVerifiedAx && isVerifiedATx );
 }
 
@@ -249,7 +252,15 @@ void KokkosKernelOperator< Device >::apply_operator( const SpMV_VectorType& rhs,
 {
     const Scalar alpha = SC_ONE;
     const Scalar beta  = SC_ZERO;
-    KokkosSparse::spmv( "N", alpha, mapOperator, rhs, beta, result );
+
+    //auto d_mapOperator = Kokkos::create_mirror_view_and_copy( Kokkos::DefaultExecutionSpace::memory_space, mapOperator );
+    //auto d_rhs = Kokkos::create_mirror_view_and_copy( Kokkos::DefaultExecutionSpace, rhs );
+    auto d_rhs = Kokkos::create_mirror( Kokkos::DefaultExecutionSpace, rhs );
+    auto d_result = Kokkos::create_mirror_view( Kokkos::DefaultExecutionSpace, result );
+
+    //KokkosSparse::spmv( "N", alpha, d_mapOperator, d_rhs, beta, d_result );
+
+    Kokkos::deep_copy( result, d_result );
 }
 
 template < typename Device >
@@ -258,7 +269,15 @@ void KokkosKernelOperator< Device >::apply_transpose_operator( const SpMV_Vector
 {
     const Scalar alpha = SC_ONE;
     const Scalar beta  = SC_ZERO;
-    KokkosSparse::spmv( "N", alpha, mapTransposeOperator, rhs, beta, result );
+    // KokkosSparse::spmv( "N", alpha, mapTransposeOperator, rhs, beta, result );
+
+    auto d_mapTransposeOperator = Kokkos::create_mirror_view_and_copy( Kokkos::DefaultExecutionSpace, mapTransposeOperator );
+    auto d_rhs = Kokkos::create_mirror_view_and_copy( Kokkos::DefaultExecutionSpace, rhs );
+    auto d_result = Kokkos::create_mirror_view( Kokkos::DefaultExecutionSpace, result );
+
+    KokkosSparse::spmv( "N", alpha, d_mapTransposeOperator, d_rhs, beta, d_result );
+
+    Kokkos::deep_copy( result, d_result );
 }
 
 template < typename Device >
@@ -281,7 +300,7 @@ void KokkosKernelOperator< Device >::PerformSpMV( int n_remap_iterations )
     {
         // Project data from source to target through weight application for each variable
         // KokkosSparse::spmv( "N", alpha, mapOperator, srcTgt, beta, tgtSrc );
-        this->apply_operator( srcTgt, tgtSrc );
+        //this->apply_operator( srcTgt, tgtSrc );
     }
     return;
 }
@@ -307,7 +326,7 @@ void KokkosKernelOperator< Device >::PerformSpMVTranspose( int n_remap_iteration
     {
         // Project data from target to source through transpose application for each variable
         // KokkosSparse::spmv( "N", alpha, mapTransposeOperator, tgtSrc, beta, srcTgt );
-        this->apply_transpose_operator( tgtSrc, srcTgt );
+        //this->apply_transpose_operator( tgtSrc, srcTgt );
     }
     return;
 }
