@@ -267,28 +267,36 @@ void KokkosKernelOperator< Device >::apply_transpose_operator( const SpMV_Vector
 template < typename Device >
 void KokkosKernelOperator< Device >::PerformSpMV( int n_remap_iterations )
 {
+   int l_nRHSV = this->nRHSV;
+   int l_nOpCols = this->nOpCols;
+   int l_nOpRows = this->nOpRows;
     // Perform SpMV from Source to Target through operator application
     // multiply RHS for each variable to be projected
-    SpMV_VectorType srcTgt( "lhs", nOpCols, nRHSV );  // srcTgt = 1.0
+    SpMV_VectorType srcTgt( "lhs", l_nOpCols, l_nRHSV );  // srcTgt = 1.0
+    SpMV_VectorType tgtSrc( "rhs", l_nOpRows, l_nRHSV );  // tgtSrc = 0.0
+    /*
     for( int iR = 0; iR < nOpCols; ++iR )
         for( int iV = 0; iV < nRHSV; ++iV )
             srcTgt( iR, iV ) = 1.0;
-    SpMV_VectorType tgtSrc( "rhs", nOpRows, nRHSV );  // tgtSrc = 0.0
     for( int iR = 0; iR < nOpRows; ++iR )
         for( int iV = 0; iV < nRHSV; ++iV )
             tgtSrc( iR, iV ) = 0.0;
+    */
+    Kokkos::parallel_for( l_nOpCols, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) srcTgt( iR, iV ) = 1.0; });
+    Kokkos::parallel_for( l_nOpRows, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) tgtSrc( iR, iV ) = 0.0; });
 
+    Kokkos::fence();
     // const Scalar alpha = SC_ONE;
     // const Scalar beta  = SC_ZERO;
     for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
-        typename SpMV_VectorType::HostMirror result_h = Kokkos::create_mirror_view( tgtSrc );
-
         // Project data from source to target through weight application for each variable
         // KokkosSparse::spmv( "N", alpha, mapOperator, srcTgt, beta, tgtSrc );
         this->apply_operator( srcTgt, tgtSrc );
     
+        typename SpMV_VectorType::HostMirror result_h = Kokkos::create_mirror_view( tgtSrc );
         Kokkos::deep_copy( result_h, tgtSrc );
+        // auto result_h = Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace, tgtSrc );
     }
     return;
 }
@@ -297,28 +305,36 @@ template < typename Device >
 void KokkosKernelOperator< Device >::PerformSpMVTranspose( int n_remap_iterations )
 {
     assert( enableTransposeOp );
+    int l_nRHSV = this->nRHSV;
+    int l_nOpCols = this->nOpCols;
+    int l_nOpRows = this->nOpRows;
+
     // Perform SpMV from Target to Source through transpose operator application
     // multiple RHS for each variable to be projected
-    SpMV_VectorType srcTgt( "lhs", nOpCols, nRHSV );  // srcTgt = 0.0
+    SpMV_VectorType srcTgt( "lhs", l_nOpCols, l_nRHSV );  // srcTgt = 0.0
+    SpMV_VectorType tgtSrc( "rhs", l_nOpRows, l_nRHSV );  // tgtSrc = 1.0
+    Kokkos::parallel_for( l_nOpCols, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) srcTgt( iR, iV ) = 0.0; });
+    Kokkos::parallel_for( l_nOpRows, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) tgtSrc( iR, iV ) = 1.0; });
+    /*
     for( int iR = 0; iR < nOpCols; ++iR )
         for( int iV = 0; iV < nRHSV; ++iV )
             srcTgt( iR, iV ) = 0.0;
-    SpMV_VectorType tgtSrc( "rhs", nOpRows, nRHSV );  // tgtSrc = 1.0
     for( int iR = 0; iR < nOpRows; ++iR )
         for( int iV = 0; iV < nRHSV; ++iV )
             tgtSrc( iR, iV ) = 1.0;
-
+    */
+    Kokkos::fence();
+    
     // const Scalar alpha = SC_ONE;
     // const Scalar beta  = SC_ZERO;
     for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
-        typename SpMV_VectorType::HostMirror result_h = Kokkos::create_mirror_view( srcTgt );
-
         // Project data from target to source through transpose application for each variable
         // KokkosSparse::spmv( "N", alpha, mapTransposeOperator, tgtSrc, beta, srcTgt );
         this->apply_transpose_operator( tgtSrc, srcTgt );
         
-        Kokkos::deep_copy( result_h, tgtSrc );
+        typename SpMV_VectorType::HostMirror result_h = Kokkos::create_mirror_view( srcTgt );
+        Kokkos::deep_copy( result_h, srcTgt );
     }
     return;
 }
