@@ -58,8 +58,9 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
 void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt >& vecRow,
                     const std::vector< MOABSInt >& vecCol, const std::vector< MOABReal >& vecS );
 
-std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily, MOABSInt nOpRows, MOABSInt nOpCols,
-                                                     MOABSInt nOpNNZs, MOABSInt nVecs, bool enableTransposeOp );
+std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily, std::string executorType,
+                                                     MOABSInt nOpRows, MOABSInt nOpCols, MOABSInt nOpNNZs,
+                                                     MOABSInt nVecs, bool enableTransposeOp );
 
 int main( int argc, char** argv )
 {
@@ -69,6 +70,7 @@ int main( int argc, char** argv )
     MOABSInt n_remap_iterations         = 100;
     MOABSInt rhsvsize                   = 1;
     std::string operator_type           = "eigen3";
+    std::string executor_type           = "omp";
 
     ProgOptions opts( "Remap SpMV Mini-App" );
     opts.addRequiredArg< std::string >( "MapOperator", "Remap weights filename to optimize for SpMV",
@@ -78,6 +80,9 @@ int main( int argc, char** argv )
         "Matrix package type specification for SpMV (default=\"eigen3\"). Possible values: [\"eigen3\", \"kokkos\", "
         "\"ginkgo:CSR\", \"ginkgo:COO\", \"ginkgo:ELL\", \"ginkgo:HYB\", \"ginkgo:SEP\"]",
         &operator_type );
+
+    opts.addOpt< std::string >( "exec,e", "Execution context (default=\"omp\"). Possible values: [\"omp\", \"cuda\"]",
+                                &executor_type );
 
     // opts.addOpt< std::string >( "srcmap,s", "Source map file name for projection", &remap_operator_filename );
     opts.addOpt< void >( "transpose,t", "Compute the tranpose operator application as well", &is_target_transposed );
@@ -101,6 +106,8 @@ int main( int argc, char** argv )
     std::cout << "Source map             = " << remap_operator_filename << std::endl;
     std::cout << "Compute transpose map  = " << ( is_target_transposed ? "Yes" : "No" ) << std::endl;
     std::cout << "Number of iterations   = " << n_remap_iterations << std::endl;
+    std::cout << "Requested package      = " << operator_type << std::endl;
+    std::cout << "Requested executor     = " << executor_type << std::endl;
     std::cout << std::endl;
 
     HighresTimer timer;
@@ -122,7 +129,8 @@ int main( int argc, char** argv )
         print_metrics( nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
 
         // Create the SpMV operator by initializing with appropriate sizes for allocation
-        opImpl = BuildOperatorObject( operator_type, nOpRows, nOpCols, nOpNNZs, rhsvsize, is_target_transposed );
+        opImpl = BuildOperatorObject( operator_type, executor_type, nOpRows, nOpCols, nOpNNZs, rhsvsize,
+                                      is_target_transposed );
 
         if( opImpl )
         {
@@ -182,8 +190,9 @@ int main( int argc, char** argv )
     return 0;
 }
 
-std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily, MOABSInt nOpRows, MOABSInt nOpCols,
-                                                     MOABSInt nOpNNZs, MOABSInt nVecs, bool enableTransposeOp )
+std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily, std::string executorType,
+                                                     MOABSInt nOpRows, MOABSInt nOpCols, MOABSInt nOpNNZs,
+                                                     MOABSInt nVecs, bool enableTransposeOp )
 {
     // Check the \p operatorFamily requested
     //
@@ -214,10 +223,21 @@ std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily,
     else if( !package.compare( "kokkos" ) )
     {
         std::cout << "> Building the Kokkos-Kernels *CSR* operator\n";
-        using device_type = typename Kokkos::Device< Kokkos::DefaultExecutionSpace,
-                                                     typename Kokkos::DefaultExecutionSpace::memory_space >;
-        return std::unique_ptr< SpMVOperator >(
-            new KokkosKernelOperator< device_type >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+
+        if( !executorType.compare( "omp" ) )
+        {
+            using device_type = typename Kokkos::Device< Kokkos::DefaultExecutionSpace,
+                                                         typename Kokkos::DefaultExecutionSpace::memory_space >;
+            return std::unique_ptr< SpMVOperator >(
+                new KokkosKernelOperator< device_type >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+        }
+        else
+        {
+            using device_type = typename Kokkos::Device< Kokkos::DefaultExecutionSpace,
+                                                         typename Kokkos::DefaultExecutionSpace::memory_space >;
+            return std::unique_ptr< SpMVOperator >(
+                new KokkosKernelOperator< device_type >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+        }
     }
 #endif
     else
@@ -228,20 +248,20 @@ std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily,
         std::cout << "> Building the Ginkgo *" << matrixtype << "* operator\n";
 
         if( !matrixtype.compare( "CSR" ) )
-            return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoCSRMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+            return std::unique_ptr< SpMVOperator >( new GinkgoOperator< GinkgoCSRMatrix >(
+                nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp, executorType ) );
         else if( !matrixtype.compare( "COO" ) )
-            return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoCOOMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+            return std::unique_ptr< SpMVOperator >( new GinkgoOperator< GinkgoCOOMatrix >(
+                nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp, executorType ) );
         else if( !matrixtype.compare( "ELL" ) )
-            return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoELLMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+            return std::unique_ptr< SpMVOperator >( new GinkgoOperator< GinkgoELLMatrix >(
+                nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp, executorType ) );
         else if( !matrixtype.compare( "HYB" ) )
-            return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoHybridEllMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+            return std::unique_ptr< SpMVOperator >( new GinkgoOperator< GinkgoHybridEllMatrix >(
+                nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp, executorType ) );
         else if( !matrixtype.compare( "SEP" ) )
-            return std::unique_ptr< SpMVOperator >(
-                new GinkgoOperator< GinkgoSellpMatrix >( nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp ) );
+            return std::unique_ptr< SpMVOperator >( new GinkgoOperator< GinkgoSellpMatrix >(
+                nOpRows, nOpCols, nOpNNZs, nVecs, enableTransposeOp, executorType ) );
 #else
         std::cout << "Error: Requested operatorFamily = *" << operatorFamily << "* and package = *" << package
                   << "* and matrixtype = *" << matrixtype << "*. Returning null operator\n";
