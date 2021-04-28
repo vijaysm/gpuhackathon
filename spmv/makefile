@@ -11,7 +11,9 @@ MOAB_CXXFLAGS += -g3 -DUSE_EIGEN3 -DUSE_GINKGO -std=c++14 -Wno-delete-non-abstra
 
 all: $(ALLEXAMPLES)
 
-spmvApp: spmvApp.o netcdf.o ncvalues.o spmvApp-eigen3.h spmvApp-ginkgo.h spmvAppUtils.h ${MOAB_LIBDIR}/libMOAB.la
+spmvApp.o: spmvApp.cpp spmvApp-eigen3.h spmvApp-ginkgo.h spmvAppUtils.h ${MOAB_LIBDIR}/libMOAB.la
+
+spmvApp: spmvApp.o netcdf.o ncvalues.o ${MOAB_LIBDIR}/libMOAB.la
 	@echo "[CXXLD]  $@"
 	${VERBOSE}${MOAB_CXX} -o $@ $< netcdf.o ncvalues.o ${MOAB_LIBS_LINK} \
 		-L/lus/grand/projects/gpu_hack/sigma/vijaysm/install/lib \
@@ -32,7 +34,7 @@ spmvApp-Kokkos: spmvApp-Kokkos.o netcdf.o ncvalues.o spmvApp-kokkos.h spmvAppUti
 		-L/lus/grand/projects/gpu_hack/sigma/soft/kokkos-core-cuda-omp-install/lib -L/lus/grand/projects/gpu_hack/sigma/soft/kokkos-kernels-cuda-omp-install/lib \
 		-lkokkoskernels -lkokkoscontainers -lkokkoscore ${MOAB_LIBS_LINK} -L/lus/theta-fs0/software/thetagpu/openmpi-4.0.5/lib -lmpi -lcusparse -lcublas
 
-spmvApp-Kokkos.o: spmvApp.cpp
+spmvApp-Kokkos.o: spmvApp.cpp spmvApp-kokkos.h 
 	@echo "[CXX] $@"
 	${VERBOSE}/lus/grand/projects/gpu_hack/sigma/soft/kokkos-core-cuda-omp-install/bin/nvcc_wrapper ${KOKKOS_BUILD_FLAGS}  -isystem /grand/gpu_hack/sigma/vijaysm/install/include -I/grand/gpu_hack/sigma/vijaysm/install     -I/grand/gpu_hack/sigma/vijaysm/install/include -isystem /grand/gpu_hack/sigma/vijaysm/install/include -I/grand/gpu_hack/sigma/vijaysm/install  -I/grand/gpu_hack/sigma/vijaysm/install/include   -I/grand/gpu_hack/sigma/vijaysm/install/include -DMESH_DIR=\""/grand/gpu_hack/sigma/vijaysm/moab/build/gpuhack/../../MeshFiles/unittest"\" -std=c++17 -fopenmp -c spmvApp.cpp  -o spmvApp-Kokkos.o
 
