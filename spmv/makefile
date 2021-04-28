@@ -7,7 +7,7 @@ EXAMPLES = spmvApp
 ALLEXAMPLES = ${EXAMPLES}
 
 # If using Kokkos-Kernels or Ginkgo, need C++14 standard; Also disable some verbose warnings.
-MOAB_CXXFLAGS += -g3 -DUSE_EIGEN3 -DUSE_GINKGO -std=c++14 -Wno-delete-non-abstract-non-virtual-dtor -Wno-sign-compare -Wno-unused-parameter -Wno-narrowing
+MOAB_CXXFLAGS += -g3 -mavx  -DUSE_EIGEN3 -DUSE_GINKGO -std=c++14 -Wno-delete-non-abstract-non-virtual-dtor -Wno-sign-compare -Wno-unused-parameter -Wno-narrowing
 
 all: $(ALLEXAMPLES)
 
@@ -20,9 +20,9 @@ spmvApp: spmvApp.o netcdf.o ncvalues.o ${MOAB_LIBDIR}/libMOAB.la
 		-lginkgo -lginkgo_device -lginkgo_omp -lginkgo_cuda -lginkgo_reference -lginkgo_hip -lginkgo_dpcpp # Ginkgo LIBS
 
 # Help Kokkos-Kernels build correctly
-KOKKOS_BUILD_FLAGS= -DUSE_KOKKOS -ftree-vectorize -O3 -DNDEBUG -I/lus/grand/projects/gpu_hack/sigma/soft/kokkos-core-cuda-omp-install/include \
+KOKKOS_BUILD_FLAGS= -DUSE_KOKKOS -mavx -arch=sm_80  -ftree-vectorize -O3 -DNDEBUG -I/lus/grand/projects/gpu_hack/sigma/soft/kokkos-core-cuda-omp-install/include \
 										-I/lus/grand/projects/gpu_hack/sigma/soft/kokkos-kernels-cuda-omp-install/include -I/grand/gpu_hack/sigma/vijaysm/install/include \
-										$(KOKKOS_CPPFLAGS) $(KOKKOS_CXXFLAGS) -mavx -arch=sm_80 --expt-extended-lambda
+										$(KOKKOS_CPPFLAGS) $(KOKKOS_CXXFLAGS)  --expt-extended-lambda
 KOKKOS_LINK_FLAGS= -L/lus/grand/projects/gpu_hack/sigma/soft/kokkos-core-cuda-omp-install/lib -L/lus/grand/projects/gpu_hack/sigma/soft/kokkos-kernels-cuda-omp-install/ \
 									 -lkokkoskernels -lkokkoscontainers -lkokkoscore
 
