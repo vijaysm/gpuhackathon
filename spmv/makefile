@@ -3,13 +3,12 @@ include ../makefile.config
 
 default: all
 
-EXAMPLES = spmvApp
-ALLEXAMPLES = ${EXAMPLES}
+ALLEXAMPLES = spmvApp spmvApp-Kokkos
 
 # If using Kokkos-Kernels or Ginkgo, need C++14 standard; Also disable some verbose warnings.
 MOAB_CXXFLAGS += -g3 -mavx  -DUSE_EIGEN3 -DUSE_GINKGO -std=c++14 -Wno-delete-non-abstract-non-virtual-dtor -Wno-sign-compare -Wno-unused-parameter -Wno-narrowing
 
-all: $(ALLEXAMPLES)
+all: ${ALLEXAMPLES}
 
 spmvApp.o: spmvApp.cpp spmvApp-eigen3.h spmvApp-ginkgo.h spmvAppUtils.h ${MOAB_LIBDIR}/libMOAB.la
 
