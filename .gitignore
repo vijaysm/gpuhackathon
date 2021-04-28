@@ -25,4 +25,5 @@ Thumbs.db
 # No executables
 spmv/spmvApp
 kdtree/kdtreeApp
-
+*.qdrep
+*.sqlite
