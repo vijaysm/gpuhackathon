@@ -15,11 +15,11 @@ class SpMVOperator
   public:
     virtual ~SpMVOperator(){};
     virtual void CreateOperator( const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
-                                 const std::vector< MOABReal >& vecS )           = 0;
+                                 const std::vector< MOABReal >& vecS )                                             = 0;
     virtual bool PerformVerification( const std::vector< MOABReal >& vecAreasA,
-                                      const std::vector< MOABReal >& vecAreasB ) = 0;
-    virtual void PerformSpMV( int n_remap_iterations = 1 )                       = 0;
-    virtual void PerformSpMVTranspose( int n_remap_iterations = 1 )              = 0;
+                                      const std::vector< MOABReal >& vecAreasB )                                   = 0;
+    virtual void PerformSpMV( const std::vector< double >& inputData, std::vector< double >& outputData )          = 0;
+    virtual void PerformSpMVTranspose( const std::vector< double >& inputData, std::vector< double >& outputData ) = 0;
 
     bool is_initialized()
     {

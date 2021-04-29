@@ -48,6 +48,7 @@
 // C++ includes
 #include <iostream>
 #include <memory>
+#include <random>
 #include <cassert>
 
 moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< MOABSInt >& vecRow,
@@ -86,7 +87,8 @@ int main( int argc, char** argv )
 
     // opts.addOpt< std::string >( "srcmap,s", "Source map file name for projection", &remap_operator_filename );
     opts.addOpt< void >( "transpose,t", "Compute the tranpose operator application as well", &is_target_transposed );
-    opts.addOpt< void >( "verify", "Verify that the matrix-vector products are correct. (Expensive)", &perform_verification );
+    opts.addOpt< void >( "verify", "Verify that the matrix-vector products are correct. (Expensive)",
+                         &perform_verification );
 
     // Need option handling here for input filename
     opts.addOpt< MOABSInt >( "vsize,v", "Number of vectors to project (default=1)", &rhsvsize );
@@ -112,8 +114,12 @@ int main( int argc, char** argv )
 
     HighresTimer timer;
     moab::ErrorCode rval;
+    // Seed with a real random value, if available
+    std::random_device r;
+
+    // Store operator specific information
     MOABSInt nOpRows, nOpCols, nOpNNZs;
-    std::unique_ptr<SpMVOperator> opImpl;
+    std::unique_ptr< SpMVOperator > opImpl;
     std::vector< MOABReal > vecAreasA, vecAreasB;
 
     // compute source data
@@ -122,8 +128,9 @@ int main( int argc, char** argv )
         std::vector< MOABSInt > opNNZRows, opNNZCols;
         std::vector< MOABReal > opNNZVals;
         timer.push();
-        rval = ReadRemapOperator( remap_operator_filename, opNNZRows, opNNZCols, opNNZVals, vecAreasA, vecAreasB, nOpRows,
-                                  nOpCols, nOpNNZs );MB_CHK_ERR( rval );
+        rval = ReadRemapOperator( remap_operator_filename, opNNZRows, opNNZCols, opNNZVals, vecAreasA, vecAreasB,
+                                  nOpRows, nOpCols, nOpNNZs );
+        MB_CHK_ERR( rval );
         timer.pop( "ReadRemapOperator", true );
 
         print_metrics( nOpRows, nOpCols, opNNZRows, opNNZCols, opNNZVals );
@@ -141,15 +148,25 @@ int main( int argc, char** argv )
         }
     }
 
+    double rand_lower_bound = 0.0;
+    double rand_upper_bound = 100.0;
+    // std::default_random_engine randEngine;
+    std::mt19937 randEngine;  // Standard mersenne_twister_engine with default seed
+    std::uniform_real_distribution< double > randDistribution( rand_lower_bound, rand_upper_bound );
     // Perform the matrix vector products and time it accurately
     if( opImpl )
     {
         if( perform_verification ) { opImpl->PerformVerification( vecAreasA, vecAreasB ); }
 
+        std::vector< MOABReal > forwardVec( nOpCols * rhsvsize ), reverseVec( nOpRows * rhsvsize );
+        // Fill input vector with random values
+        std::generate( forwardVec.begin(), forwardVec.end(),
+                       [&randDistribution, &randEngine]() { return randDistribution( randEngine ); } );
+        std::fill( reverseVec.begin(), reverseVec.end(), 0.0 );
         timer.push();
         for( auto iR = 0; iR < n_remap_iterations; ++iR )
         {
-            opImpl->PerformSpMV();
+            opImpl->PerformSpMV( forwardVec, reverseVec );
         }
         timer.pop( "RemapTotalSpMV" );
 
@@ -160,10 +177,13 @@ int main( int argc, char** argv )
 
         if( is_target_transposed )
         {
+            std::generate( reverseVec.begin(), reverseVec.end(),
+                           [&randDistribution, &randEngine]() { return randDistribution( randEngine ); } );
+            std::fill( forwardVec.begin(), forwardVec.end(), 0.0 );
             timer.push();
             for( auto iR = 0; iR < n_remap_iterations; ++iR )
             {
-                opImpl->PerformSpMVTranspose();
+                opImpl->PerformSpMVTranspose( reverseVec, forwardVec );
             }
             timer.pop( "RemapTransposeTotalSpMV" );
 
@@ -205,8 +225,8 @@ std::unique_ptr< SpMVOperator > BuildOperatorObject( std::string operatorFamily,
     //      6. "ginkgo:HYB" - Hybrid format
     //      7. "ginkgo:SEP" - Sell-P format
     assert( operatorFamily.size() == 6 || operatorFamily.size() == 10 );
-    const std::string package = operatorFamily.substr(0, 6);
-    const std::string matrixtype = (operatorFamily.size() == 10 ? operatorFamily.substr( 7, 3 ) : "");
+    const std::string package    = operatorFamily.substr( 0, 6 );
+    const std::string matrixtype = ( operatorFamily.size() == 10 ? operatorFamily.substr( 7, 3 ) : "" );
 
     if( !package.compare( "eigen3" ) )
     {
@@ -373,7 +393,7 @@ moab::ErrorCode ReadRemapOperator( const std::string& strMapFile, std::vector< M
 void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt >& vecRow,
                     const std::vector< MOABSInt >& /* vecCol */, const std::vector< MOABReal >& /* vecS */ )
 {
-    const int MAXNNZ = 500;
+    const int MAXNNZ = 10000;
     std::cout << "Analyzing remap operator: size = [" << nRows << " x " << nCols << "] with NNZ = " << vecRow.size()
               << "\n";
     std::vector< int > nnzPerRow( nRows, 0 );
@@ -399,10 +419,10 @@ void print_metrics( MOABSInt nRows, MOABSInt nCols, const std::vector< MOABSInt 
     printf( "---------------------------\n" );
     printf( "      NNZ Histogram\n" );
     printf( "---------------------------\n" );
-    printf( "      iNNZ       n(NNZ)\n" );
+    printf( "       iNNZ       n(NNZ)\n" );
     for( size_t iR = 0, index = 1; iR < nnzPerRowHist.size(); ++iR )
     {
-        if( nnzPerRowHist[iR] > 0 ) printf( "%3zu   %3zu     %8d\n", index++, iR, nnzPerRowHist[iR] );
+        if( nnzPerRowHist[iR] > 0 ) printf( "%4zu   %4zu    %8d\n", index++, iR, nnzPerRowHist[iR] );
     }
     printf( "---------------------------\n" );
     printf( "NNZ statistics: minima = %d, maxima = %d, average (rounded) = %3.0f\n\n", minNNZperRow, maxNNZperRow,

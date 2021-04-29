@@ -35,13 +35,13 @@ class Eigen3Operator : public SpMVOperator
 
     Eigen3Operator( MOABSInt nOpRows, MOABSInt nOpCols, MOABSInt nOpNNZs, MOABSInt nVecs,
                     bool requireTransposeOp = false );
-    virtual ~Eigen3Operator() {}; // TODO: clear operator memory
-    virtual void CreateOperator(  const std::vector< MOABSInt >& vecRow,
-                         const std::vector< MOABSInt >& vecCol, const std::vector< MOABReal >& vecS );
+    virtual ~Eigen3Operator(){};  // TODO: clear operator memory
+    virtual void CreateOperator( const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
+                                 const std::vector< MOABReal >& vecS );
     virtual bool PerformVerification( const std::vector< MOABReal >& vecAreasA,
                                       const std::vector< MOABReal >& vecAreasB );
-    virtual void PerformSpMV( int n_remap_iterations = 1 );
-    virtual void PerformSpMVTranspose( int n_remap_iterations = 1 );
+    virtual void PerformSpMV( const std::vector< double >& inputData, std::vector< double >& outputData );
+    virtual void PerformSpMVTranspose( const std::vector< double >& inputData, std::vector< double >& outputData );
 };
 
 Eigen3Operator::Eigen3Operator( MOABSInt nRows, MOABSInt nCols, MOABSInt nNNZs, MOABSInt nRHSV,
@@ -61,10 +61,10 @@ void Eigen3Operator::CreateOperator( const std::vector< MOABSInt >& vecRow, cons
     // create a triplet vector
     typedef Eigen::Triplet< MOABReal > SparseEntry;
     std::vector< SparseEntry > tripletList;
-    tripletList.reserve(nS);
+    tripletList.reserve( nS );
 
     // loop over nnz and populate the sparse matrix operator
-// #pragma omp parallel for shared( tripletList )
+    // #pragma omp parallel for shared( tripletList )
     for( size_t innz = 0; innz < nS; ++innz )
     {
         // mapOperator.insert( vecRow[innz]-1, vecCol[innz]-1 ) = vecS[innz];
@@ -137,7 +137,7 @@ bool Eigen3Operator::PerformVerification( const std::vector< MOABReal >& vecArea
         //           << vecAreasA[3] << std::endl;
         Eigen::Map< const Eigen::VectorXd > refVector( vecAreasA.data(), vecAreasA.size() );
         SpMV_VectorType errorATx = srcTgt - refVector;
-        isVerifiedATx            = (errorATx.norm() < 1e-12);
+        isVerifiedATx            = ( errorATx.norm() < 1e-12 );
         std::cout << "   > A^T*vecAreaB = vecAreaA ? " << ( isVerifiedATx ? "Yes." : "No." )
                   << " Error||A^T*vecAreaB - vecAreaA||_2 = " << errorATx.norm() << std::endl;
     }
@@ -146,40 +146,37 @@ bool Eigen3Operator::PerformVerification( const std::vector< MOABReal >& vecArea
     return ( isVerifiedAx && isVerifiedATx );
 }
 
-
-void Eigen3Operator::PerformSpMV( int n_remap_iterations )
+void Eigen3Operator::PerformSpMV( const std::vector< double >& inputData, std::vector< double >& outputData )
 {
     // Perform SpMV from Source to Target through operator application
     // multiply RHS for each variable to be projected
-    SpMV_VectorType srcTgt = SpMV_VectorType::Ones( nOpCols, nRHSV );
-    SpMV_VectorType tgtSrc = SpMV_VectorType::Zero( nOpRows, nRHSV );
+    Eigen::Map< const SpMV_VectorType > xRhs( inputData.data(), nOpCols, nRHSV );
+    Eigen::Map< SpMV_VectorType > xOut( outputData.data(), nOpRows, nRHSV );
 
-    for( auto iR = 0; iR < n_remap_iterations; ++iR )
+    // Project data from source to target through weight application for each variable
     {
-        // Project data from source to target through weight application for each variable
-        tgtSrc = mapOperator * srcTgt;
-// #pragma omp parallel for
-//         for( auto iVar = 0; iVar < nRHSV; ++iVar )
-//             tgtSrc.col( iVar ) = mapOperator * srcTgt.col( iVar );
+        xOut = mapOperator * xRhs;
+        // #pragma omp parallel for
+        //         for( auto iVar = 0; iVar < nRHSV; ++iVar )
+        //             tgtSrc.col( iVar ) = mapOperator * srcTgt.col( iVar );
     }
     return;
 }
 
-void Eigen3Operator::PerformSpMVTranspose( int n_remap_iterations )
+void Eigen3Operator::PerformSpMVTranspose( const std::vector< double >& inputData, std::vector< double >& outputData )
 {
     assert( enableTransposeOp );
     // Perform SpMV from Target to Source through transpose operator application
     // multiple RHS for each variable to be projected
-    SpMV_VectorType srcTgt = SpMV_VectorType::Zero( nOpCols, nRHSV );
-    SpMV_VectorType tgtSrc = SpMV_VectorType::Ones( nOpRows, nRHSV );
+    Eigen::Map< const SpMV_VectorType > xRhs( inputData.data(), nOpRows, nRHSV );
+    Eigen::Map< SpMV_VectorType > xOut( outputData.data(), nOpCols, nRHSV );
 
-    for( auto iR = 0; iR < n_remap_iterations; ++iR )
+    // Project data from target to source through transpose application for each variable
     {
-        // Project data from target to source through transpose application for each variable
-        srcTgt = mapTransposeOperator * tgtSrc;
-// #pragma omp parallel for
-//         for( auto iVar = 0; iVar < nRHSV; ++iVar )
-//             srcTgt.col( iVar ) = mapTransposeOperator * tgtSrc.col( iVar );
+        xOut = mapTransposeOperator * xRhs;
+        // #pragma omp parallel for
+        //         for( auto iVar = 0; iVar < nRHSV; ++iVar )
+        //             srcTgt.col( iVar ) = mapTransposeOperator * tgtSrc.col( iVar );
     }
     return;
 }
