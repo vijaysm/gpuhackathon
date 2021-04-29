@@ -55,40 +55,40 @@ class KokkosKernelOperator : public SpMVOperator
     KokkosKernelOperator( MOABSInt nOpRows, MOABSInt nOpCols, MOABSInt nOpNNZs, MOABSInt nVecs,
                           bool requireTransposeOp = false );
     virtual ~KokkosKernelOperator(){};  // TODO: clear operator memory
-    virtual void CreateOperator(  const std::vector< MOABSInt >& vecRow,
-                         const std::vector< MOABSInt >& vecCol, const std::vector< MOABReal >& vecS );
+    virtual void CreateOperator( const std::vector< MOABSInt >& vecRow, const std::vector< MOABSInt >& vecCol,
+                                 const std::vector< MOABReal >& vecS );
     virtual bool PerformVerification( const std::vector< MOABReal >& vecAreasA,
                                       const std::vector< MOABReal >& vecAreasB );
-    virtual void PerformSpMV( int n_remap_iterations = 1 );
-    virtual void PerformSpMVTranspose( int n_remap_iterations = 1 );
+    virtual void PerformSpMV( const std::vector< double >& inputData, std::vector< double >& outputData );
+    virtual void PerformSpMVTranspose( const std::vector< double >& inputData, std::vector< double >& outputData );
 
-    private:
-      void apply_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result );
-      void apply_transpose_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result );
+  private:
+    void apply_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result );
+    void apply_transpose_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result );
 
-      const Scalar SC_ONE  = Kokkos::ArithTraits< Scalar >::one();
-      const Scalar SC_ZERO = Kokkos::ArithTraits< Scalar >::zero();
+    const Scalar SC_ONE  = Kokkos::ArithTraits< Scalar >::one();
+    const Scalar SC_ZERO = Kokkos::ArithTraits< Scalar >::zero();
 };
 
 template < typename Device >
-KokkosKernelOperator< Device >::KokkosKernelOperator( MOABSInt nRows, MOABSInt nCols, MOABSInt nNNZs,
-                                                                    MOABSInt nRHSV, bool requireTransposeOp )
+KokkosKernelOperator< Device >::KokkosKernelOperator( MOABSInt nRows, MOABSInt nCols, MOABSInt nNNZs, MOABSInt nRHSV,
+                                                      bool requireTransposeOp )
     : SpMVOperator( nRows, nCols, nNNZs, nRHSV, requireTransposeOp )
 {
     std::cout << "device_type: " << execution_space::name() << std::endl;
-    forwardRhs = SpMV_VectorType( "lhs", nCols, nRHSV);
-    reverseRhs = SpMV_VectorType( "rhs", nRows, nRHSV);
+    forwardRhs = SpMV_VectorType( "lhs", nCols, nRHSV );
+    reverseRhs = SpMV_VectorType( "rhs", nRows, nRHSV );
 
     h_reverseRhs = Kokkos::create_mirror_view( reverseRhs );
     h_forwardRhs = Kokkos::create_mirror_view( forwardRhs );
-    // std::cout << forwardRhs.data() << " - " << forwardRhs.size() << std::endl; 
-    // std::cout << reverseRhs.data() << " - " << reverseRhs.size() << std::endl; 
+    // std::cout << forwardRhs.data() << " - " << forwardRhs.size() << std::endl;
+    // std::cout << reverseRhs.data() << " - " << reverseRhs.size() << std::endl;
 }
 
 template < typename Device >
 void KokkosKernelOperator< Device >::CreateOperator( const std::vector< MOABSInt >& vecRow,
-                                                                   const std::vector< MOABSInt >& vecCol,
-                                                                   const std::vector< MOABReal >& vecS )
+                                                     const std::vector< MOABSInt >& vecCol,
+                                                     const std::vector< MOABReal >& vecS )
 {
     // https://github.com/kokkos/kokkos-kernels/wiki/SPARSE-2%3A%3Aspmv
     using graph_type   = typename SpMV_MatrixType::staticcrsgraph_type;
@@ -124,7 +124,7 @@ void KokkosKernelOperator< Device >::CreateOperator( const std::vector< MOABSInt
         typename values_type::HostMirror values_h = Kokkos::create_mirror_view( values );
         for( size_t ind = 0; ind < vecS.size(); ++ind )
         {
-            entries_h( ind ) = vecCol[ind]-1;
+            entries_h( ind ) = vecCol[ind] - 1;
             values_h( ind )  = vecS[ind];
         }
         Kokkos::deep_copy( entries, entries_h );
@@ -173,7 +173,7 @@ void KokkosKernelOperator< Device >::CreateOperator( const std::vector< MOABSInt
         typename values_type::HostMirror values_h = Kokkos::create_mirror_view( values );
         for( size_t ind = 0; ind < vecS.size(); ++ind )
         {
-            entries_h( ind ) = vecRow[idx[ind]]-1;
+            entries_h( ind ) = vecRow[idx[ind]] - 1;
             values_h( ind )  = vecS[idx[ind]];
         }
         Kokkos::deep_copy( entries, entries_h );
@@ -181,14 +181,15 @@ void KokkosKernelOperator< Device >::CreateOperator( const std::vector< MOABSInt
 
         // graph_type myGraph( entries, row_map );
         // mapTransposeOperator = SpMV_MatrixType( "Transpose operator", nOpCols, nOpRows, values, myGraph );
-        mapTransposeOperator = SpMV_MatrixType( "Transpose operator", nOpCols, nOpRows, nNNZ, values, row_map, entries );
+        mapTransposeOperator =
+            SpMV_MatrixType( "Transpose operator", nOpCols, nOpRows, nNNZ, values, row_map, entries );
     }
     return;
 }
 
 template < typename Device >
 bool KokkosKernelOperator< Device >::PerformVerification( const std::vector< MOABReal >& vecAreasA,
-                                                                        const std::vector< MOABReal >& vecAreasB )
+                                                          const std::vector< MOABReal >& vecAreasB )
 {
     if( !enableTransposeOp )
     {
@@ -214,12 +215,11 @@ bool KokkosKernelOperator< Device >::PerformVerification( const std::vector< MOA
         Scalar errorAx = 0.0;
         for( int iR = 0; iR < nOpRows; ++iR )
             errorAx += std::pow( tgtSrc( iR, 0 ) - 1.0, 2.0 );
-        errorAx = std::sqrt( errorAx );
+        errorAx      = std::sqrt( errorAx );
         isVerifiedAx = ( errorAx < 1e-6 );
         std::cout << "   > A*[ones] = ones ? " << ( isVerifiedAx ? "Yes." : "No." )
                   << " Error||A*[ones] - [ones]||_2 = " << errorAx << std::endl;
     }
-
 
     {
         SpMV_VectorType srcTgt( "lhs", nOpCols, 1 );  // srcTgt = 0.0
@@ -248,7 +248,7 @@ bool KokkosKernelOperator< Device >::PerformVerification( const std::vector< MOA
             errorATx += std::pow( srcTgt( iR, 0 ) - vecAreasA[iR], 2.0 );  // now srcTgt = reference vector
         errorATx = std::sqrt( errorATx );
 
-        isVerifiedATx            = (errorATx < 1e-12);
+        isVerifiedATx = ( errorATx < 1e-12 );
         std::cout << "   > A^T*vecAreaB = vecAreaA ? " << ( isVerifiedATx ? "Yes." : "No." )
                   << " Error||A^T*vecAreaB - vecAreaA||_2 = " << errorATx << std::endl;
     }
@@ -267,192 +267,81 @@ void KokkosKernelOperator< Device >::apply_operator( const SpMV_VectorType& rhs,
 }
 
 template < typename Device >
-void KokkosKernelOperator< Device >::apply_transpose_operator( const SpMV_VectorType& rhs,
-                                                                    SpMV_VectorType& result )
+void KokkosKernelOperator< Device >::apply_transpose_operator( const SpMV_VectorType& rhs, SpMV_VectorType& result )
 {
     const Scalar alpha = SC_ONE;
     const Scalar beta  = SC_ZERO;
-    
+
     KokkosSparse::spmv( "N", alpha, mapTransposeOperator, rhs, beta, result );
 }
 
 template < typename Device >
-void KokkosKernelOperator< Device >::PerformSpMV( //const std::vector<double>& inputdata, 
-                                                  int n_remap_iterations )
+void KokkosKernelOperator< Device >::PerformSpMV( const std::vector< double >& inputData,
+                                                  std::vector< double >& outputData )
 {
-   assert(this->nRHSV * this->nOpCols == inputdata.size());
-   
-   int l_nRHSV = this->nRHSV;
-   int l_nOpCols = this->nOpCols;
-   int l_nOpRows = this->nOpRows;
+    assert( this->nRHSV * this->nOpCols == inputdata.size() );
 
-    // Kokkos::View<double**, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged> > inputView ( "SpMVInputView", inputdata.data(), this->nOpCols, this->nRHSV);
+    int l_nRHSV   = this->nRHSV;
+    int l_nOpCols = this->nOpCols;
+    int l_nOpRows = this->nOpRows;
 
-    auto l_fwdRhs = forwardRhs;
-    using MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy<Kokkos::Experimental::Rank<2> >;
-    MDRangePolicy_2D policy({0,0}, {l_nOpCols, l_nRHSV});
-    Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const int iR, const int iV)
+    // Kokkos::View<double**, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged> > inputView ( "SpMVInputView",
+    // inputdata.data(), this->nOpCols, this->nRHSV);
+
+    auto l_fwdRhs          = forwardRhs;
+    using MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy< Kokkos::Experimental::Rank< 2 > >;
+    MDRangePolicy_2D policy( { 0, 0 }, { l_nOpCols, l_nRHSV } );
+    Kokkos::parallel_for(
+        policy, KOKKOS_LAMBDA( const int iR, const int iV ) { l_fwdRhs( iR, iV ) = 1.0; } );
+
+    Kokkos::deep_copy( reverseRhs, 0.0 );
+
+    // Project data from source to target through weight application for each variable
     {
-    	l_fwdRhs(iR, iV) = 1.0;
-    });
-
-    /*
-    auto l_revRhs = reverseRhs;
-    MDRangePolicy_2D policy2({0,0}, {l_nOpRows, l_nRHSV});
-    Kokkos::parallel_for(policy2, KOKKOS_LAMBDA(const int iR, const int iV)
-    {
-    	l_revRhs(iR, iV) = 0.0;
-    });
-    */
-    Kokkos::deep_copy(reverseRhs, 0.0);
-
-   // Perform SpMV from Source to Target through operator application
-    // multiply RHS for each variable to be projected
-    //SpMV_VectorType srcTgt( "lhs", l_nOpCols, l_nRHSV);  // srcTgt = 1.0
-    //SpMV_VectorType tgtSrc( "rhs", l_nOpRows, l_nRHSV);  // tgtSrc = 0.0
-    /*
-    for( int iR = 0; iR < nOpCols; ++iR )
-        for( int iV = 0; iV < nRHSV; ++iV )
-            srcTgt( iR, iV ) = 1.0;
-    for( int iR = 0; iR < nOpRows; ++iR )
-        for( int iV = 0; iV < nRHSV; ++iV )
-            tgtSrc( iR, iV ) = 0.0;
-    */
-
-    /*
-    using team_policy = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>;
-    using member_type = team_policy::member_type;
-    team_policy policy(nRHSV, Kokkos::AUTO());
-
-    Kokkos::parallel_for(policy, KOKKOS_LAMBDA( const member_type& team)
-    {
-	    const int iR = team.league_rank();
-	    Kokkos::parallel_for(Kokkos::TeamThreadRange(team,nOpCols), [&](const int iV)
-	    {
-	    	srcTgt(iR,iV) = 1.0;
-	    });
-	    Kokkos::parallel_for(Kokkos::TeamThreadRange(team,nOpRows), [&](const int iV)
-	    {
-	    	tgtSrc(iR,iV) = 0.0;
-	    });
-    });
-    */
-
-    /*
-    Kokkos::parallel_for(policy, 
-    using MDPolicyType_2D = typename Kokkos::Experimental::MDRangePolicy<
-        Kokkos::Experimental::Rank<2> >
-
-    typedef MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy<Kokkos::Experimental::Rank<2> >;
-    MDRangePolicy_2D policy_nOpCols({0,0}, {nRHSV,nOpCols});
-    MDRangePolicy_2D policy_nOpRows({0,0}, {nRHSV,nOpRows});
-
-    Kokkos::parallel_for( policy_nOpCols, KOKKOS_LAMBDA( const int iV, const int iR ){ srcTgt( iR, iV ) = 1.0; });
-    Kokkos::parallel_for( policy_nOpRows, KOKKOS_LAMBDA( const int iV, const int iR ){ tgtSrc( iR, iV ) = 0.0; });
-    */
-    // Kokkos::parallel_for( l_nOpCols, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) forwardRhs( iR, iV ) = 1.0; });
-    //Kokkos::parallel_for( l_nOpRows, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) reverseRhs( iR, iV ) = 0.0; });
-
-    // Kokkos::fence();
-    // const Scalar alpha = SC_ONE;
-    // const Scalar beta  = SC_ZERO;
-    // for( auto iR = 0; iR < n_remap_iterations; ++iR )
-    {
-        // Project data from source to target through weight application for each variable
         // KokkosSparse::spmv( "N", alpha, mapOperator, srcTgt, beta, tgtSrc );
         this->apply_operator( forwardRhs, reverseRhs );
-    
-        //typename SpMV_VectorType::HostMirror result_h = Kokkos::create_mirror_view( "ResultView", reverseRhs );
+
+        // Copy the result back to data vector
         Kokkos::deep_copy( h_reverseRhs, reverseRhs );
-        
-        
-        // auto result_h = Kokkos::create_mirror_view_and_copy( Kokkos::HostSpace, tgtSrc );
     }
     return;
 }
 
+Kokkos::deep_copy( tgtSrc, 0.0 );
+
 template < typename Device >
-void KokkosKernelOperator< Device >::PerformSpMVTranspose( int n_remap_iterations )
+void KokkosKernelOperator< Device >::PerformSpMVTranspose( const std::vector< double >& inputData,
+                                                           std::vector< double >& outputData )
 {
     assert( enableTransposeOp );
-    int l_nRHSV = this->nRHSV;
+    int l_nRHSV   = this->nRHSV;
     int l_nOpCols = this->nOpCols;
     int l_nOpRows = this->nOpRows;
 
-    auto l_fwdRhs = forwardRhs;
-    using MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy<Kokkos::Experimental::Rank<2> >;
+    auto l_fwdRhs          = forwardRhs;
+    using MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy< Kokkos::Experimental::Rank< 2 > >;
     /*
     MDRangePolicy_2D policy({0,0}, {l_nOpCols, l_nRHSV});
     Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const int iR, const int iV)
     {
-    	l_fwdRhs(iR, iV) = 0.0;
+        l_fwdRhs(iR, iV) = 0.0;
     });
     */
-    Kokkos::deep_copy(forwardRhs, 0.0);
+    Kokkos::deep_copy( forwardRhs, 0.0 );
 
     auto l_revRhs = reverseRhs;
-    MDRangePolicy_2D policy2({0,0}, {l_nOpRows, l_nRHSV});
-    Kokkos::parallel_for(policy2, KOKKOS_LAMBDA(const int iR, const int iV)
-    {
-    	l_revRhs(iR, iV) = 1.0;
-    });
+    MDRangePolicy_2D policy2( { 0, 0 }, { l_nOpRows, l_nRHSV } );
+    Kokkos::parallel_for(
+        policy2, KOKKOS_LAMBDA( const int iR, const int iV ) { l_revRhs( iR, iV ) = 1.0; } );
 
-    // Perform SpMV from Target to Source through transpose operator application
-    // multiple RHS for each variable to be projected
-    //SpMV_VectorType srcTgt( "lhs", l_nOpCols, l_nRHSV );  // srcTgt = 0.0
-    //SpMV_VectorType tgtSrc( "rhs", l_nOpRows, l_nRHSV );  // tgtSrc = 1.0
-
-    /*
-    typedef MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy<Kokkos::Experimental::Rank<2> >;
-    MDRangePolicy_2D policy_nOpCols({0,0}, {nRHSV, nOpCols});
-    MDRangePolicy_2D policy_nOpRows({0,0}, {nRHSV, nOpRows});
-
-    Kokkos::parallel_for( policy_nOpCols, KOKKOS_LAMBDA( const int iV, const int iR ){ srcTgt( iR, iV ) = 0.0; });
-    Kokkos::parallel_for( policy_nOpRows, KOKKOS_LAMBDA( const int iV, const int iR ){ tgtSrc( iR, iV ) = 1.0; });
-    */
-    
-    // Kokkos::parallel_for( l_nOpCols, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) forwardRhs( iR, iV ) = 0.0; });
-    // Kokkos::parallel_for( l_nOpRows, KOKKOS_LAMBDA( const int iR ){ for( int iV = 0; iV < l_nRHSV; ++iV ) reverseRhs( iR, iV ) = 1.0; });
-
-    /*
-    using team_policy = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace>;
-    using member_type = team_policy::member_type;
-    team_policy policy(nRHSV, Kokkos::AUTO());
-
-    Kokkos::parallel_for(policy, KOKKOS_LAMBDA( const member_type& team )
-    {
-	    const int iR = team.league_rank();
-	    Kokkos::parallel_for(Kokkos::TeamThreadRange(team,nOpCols), [&](const int iV)
-	    {
-	    	srcTgt(iR,iV) = 0.0;
-	    });
-	    Kokkos::parallel_for(Kokkos::TeamThreadRange(team,nOpRows), [&](const int iV)
-	    {
-	    	tgtSrc(iR,iV) = 1.0;
-	    });
-    });
-    */
-    /*
-    for( int iR = 0; iR < nOpCols; ++iR )
-        for( int iV = 0; iV < nRHSV; ++iV )
-            srcTgt( iR, iV ) = 0.0;
-    for( int iR = 0; iR < nOpRows; ++iR )
-        for( int iV = 0; iV < nRHSV; ++iV )
-            tgtSrc( iR, iV ) = 1.0;
-    */
-    // Kokkos::fence();
-    
-    // const Scalar alpha = SC_ONE;
-    // const Scalar beta  = SC_ZERO;
-    // for( auto iR = 0; iR < n_remap_iterations; ++iR )
     {
         // Project data from target to source through transpose application for each variable
         // KokkosSparse::spmv( "N", alpha, mapTransposeOperator, tgtSrc, beta, srcTgt );
         this->apply_transpose_operator( reverseRhs, forwardRhs );
-        
+
         Kokkos::deep_copy( h_forwardRhs, forwardRhs );
     }
     return;
 }
 
-#endif // __SPMVAPP_KOKKOS_H__
+#endif  // __SPMVAPP_KOKKOS_H__
