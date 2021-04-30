@@ -276,24 +276,31 @@ void KokkosKernelOperator< Device >::apply_transpose_operator( const SpMV_Vector
 }
 
 template < typename Device >
+//void KokkosKernelOperator< Device >::PerformSpMV( double* inputData,
+//                                                  std::vector< double >& outputData )
+
 void KokkosKernelOperator< Device >::PerformSpMV( const std::vector< double >& inputData,
                                                   std::vector< double >& outputData )
 {
     assert( this->nRHSV * this->nOpCols == inputdata.size() );
 
-    int l_nRHSV   = this->nRHSV;
-    int l_nOpCols = this->nOpCols;
-    int l_nOpRows = this->nOpRows;
+    //int l_nRHSV   = this->nRHSV;
+    //int l_nOpCols = this->nOpCols;
+    //int l_nOpRows = this->nOpRows;
 
-    // Kokkos::View<double**, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged> > inputView ( "SpMVInputView",
-    // inputdata.data(), this->nOpCols, this->nRHSV);
+    //double **A = nullptr;
+    Kokkos::View<const double**, Kokkos::LayoutLeft, Kokkos::HostSpace, Kokkos::MemoryUnmanaged > inputView ( inputData.data(), this->nOpCols, this->nRHSV );
+    Kokkos::deep_copy( forwardRhs, inputView );
+    // inputView.assign_data(input.data());
 
-    auto l_fwdRhs          = forwardRhs;
-    using MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy< Kokkos::Experimental::Rank< 2 > >;
-    MDRangePolicy_2D policy( { 0, 0 }, { l_nOpCols, l_nRHSV } );
-    Kokkos::parallel_for(
-        policy, KOKKOS_LAMBDA( const int iR, const int iV ) { l_fwdRhs( iR, iV ) = 1.0; } );
+    //auto l_fwdRhs          = h_forwardRhs;
+    //auto l_idata           = inputData.data();
+    //using MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy< Kokkos::Experimental::Rank< 2 > >;
+    //MDRangePolicy_2D inppolicy( { 0, 0 }, { l_nOpCols, l_nRHSV } );
+    //Kokkos::parallel_for(
+    //    inppolicy, KOKKOS_LAMBDA( const int iR, const int iV ) { l_fwdRhs( iR, iV ) = l_idata[iV*l_nOpCols+iR]; } );
 
+    //Kokkos::deep_copy( forwardRhs, h_forwardRhs );
     Kokkos::deep_copy( reverseRhs, 0.0 );
 
     // Project data from source to target through weight application for each variable
@@ -302,45 +309,60 @@ void KokkosKernelOperator< Device >::PerformSpMV( const std::vector< double >& i
         this->apply_operator( forwardRhs, reverseRhs );
 
         // Copy the result back to data vector
-        Kokkos::deep_copy( h_reverseRhs, reverseRhs );
+        //Kokkos::deep_copy( h_reverseRhs, reverseRhs );
     }
+    Kokkos::View<double**, Kokkos::LayoutLeft, Kokkos::HostSpace, Kokkos::MemoryUnmanaged > outputView ( outputData.data(), this->nOpRows, this->nRHSV );
+    Kokkos::deep_copy( outputView, reverseRhs );
+
+    //auto l_revRhs          = h_reverseRhs;
+    //auto l_odata           = outputData.data();
+    //MDRangePolicy_2D outpolicy( { 0, 0 }, { l_nOpRows, l_nRHSV } );
+    //Kokkos::parallel_for(
+    //    outpolicy, KOKKOS_LAMBDA( const int iR, const int iV ) { l_odata[iV*l_nOpRows+iR] = l_revRhs( iR, iV ); } );
+
     return;
 }
 
-Kokkos::deep_copy( tgtSrc, 0.0 );
 
 template < typename Device >
 void KokkosKernelOperator< Device >::PerformSpMVTranspose( const std::vector< double >& inputData,
                                                            std::vector< double >& outputData )
 {
     assert( enableTransposeOp );
-    int l_nRHSV   = this->nRHSV;
-    int l_nOpCols = this->nOpCols;
-    int l_nOpRows = this->nOpRows;
+    //int l_nRHSV   = this->nRHSV;
+    //int l_nOpCols = this->nOpCols;
+    //int l_nOpRows = this->nOpRows;
 
-    auto l_fwdRhs          = forwardRhs;
+    Kokkos::View<const double**, Kokkos::LayoutLeft, Kokkos::HostSpace, Kokkos::MemoryUnmanaged > inputView ( inputData.data(), this->nOpRows, this->nRHSV );
+    Kokkos::deep_copy( reverseRhs, inputView );
+   
+    //auto l_revRhs          = h_reverseRhs;
+    //auto l_idata           = inputData.data();
     using MDRangePolicy_2D = Kokkos::Experimental::MDRangePolicy< Kokkos::Experimental::Rank< 2 > >;
-    /*
-    MDRangePolicy_2D policy({0,0}, {l_nOpCols, l_nRHSV});
-    Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const int iR, const int iV)
-    {
-        l_fwdRhs(iR, iV) = 0.0;
-    });
-    */
-    Kokkos::deep_copy( forwardRhs, 0.0 );
+    //MDRangePolicy_2D inppolicy( { 0, 0 }, { l_nOpRows, l_nRHSV } );
+    //Kokkos::parallel_for(
+    //    inppolicy, KOKKOS_LAMBDA( const int iR, const int iV ) { l_revRhs( iR, iV ) = l_idata[iV*l_nOpRows+iR]; } );
 
-    auto l_revRhs = reverseRhs;
-    MDRangePolicy_2D policy2( { 0, 0 }, { l_nOpRows, l_nRHSV } );
-    Kokkos::parallel_for(
-        policy2, KOKKOS_LAMBDA( const int iR, const int iV ) { l_revRhs( iR, iV ) = 1.0; } );
+    //Kokkos::deep_copy( reverseRhs, h_reverseRhs );
+    Kokkos::deep_copy( forwardRhs, 0.0 );
 
     {
         // Project data from target to source through transpose application for each variable
         // KokkosSparse::spmv( "N", alpha, mapTransposeOperator, tgtSrc, beta, srcTgt );
         this->apply_transpose_operator( reverseRhs, forwardRhs );
 
-        Kokkos::deep_copy( h_forwardRhs, forwardRhs );
+        // Kokkos::deep_copy( h_forwardRhs, forwardRhs );
     }
+    Kokkos::View<double**, Kokkos::LayoutLeft, Kokkos::HostSpace, Kokkos::MemoryUnmanaged > outputView ( outputData.data(), this->nOpCols, this->nRHSV );
+    Kokkos::deep_copy( outputView, forwardRhs );
+
+
+    //auto l_fwdRhs          = h_forwardRhs;
+    //auto l_odata           = outputData.data();
+    //MDRangePolicy_2D outpolicy( { 0, 0 }, { l_nOpCols, l_nRHSV } );
+    //Kokkos::parallel_for(
+    //    outpolicy, KOKKOS_LAMBDA( const int iR, const int iV ) { l_odata[iV*l_nOpCols+iR] = l_fwdRhs( iR, iV ); } );
+
     return;
 }
 

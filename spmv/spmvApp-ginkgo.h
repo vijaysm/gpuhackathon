@@ -20,7 +20,7 @@ typedef gko::matrix::Ell< MOABReal > GinkgoELLMatrix;
 typedef gko::matrix::Hybrid< MOABReal > GinkgoHybridEllMatrix;
 typedef gko::matrix::Sellp< MOABReal > GinkgoSellpMatrix;
 
-// #define USE_CSR_TRANSPOSE_LINOP
+#define USE_CSR_TRANSPOSE_LINOP
 
 template < typename MatrixType >
 class GinkgoOperator : public SpMVOperator
@@ -87,8 +87,10 @@ GinkgoOperator< MatrixType >::GinkgoOperator( MOABSInt nRows, MOABSInt nCols, MO
     d_reverseRhs = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpRows, nRHSV } );
     d_reverseRhs->fill( 0.0 );
 
-    h_forwardRhs = SpMV_VectorType::create( host_executor, gko::dim< 2 >{ nOpCols, nRHSV } );
-    h_reverseRhs = SpMV_VectorType::create( host_executor, gko::dim< 2 >{ nOpRows, nRHSV } );
+    {
+      h_forwardRhs = SpMV_VectorType::create( host_executor, gko::dim< 2 >{ nOpCols, nRHSV } );
+      h_reverseRhs = SpMV_VectorType::create( host_executor, gko::dim< 2 >{ nOpRows, nRHSV } );
+    }
 }
 
 // Comparison function to sort the vector elements
@@ -302,10 +304,9 @@ template < typename MatrixType >
 void GinkgoOperator< MatrixType >::PerformSpMV( const std::vector< double >& inputData,
                                                 std::vector< double >& outputData )
 {
-    // auto rhsValues = h_forwardRhs->get_values();
-    for( gko::size_type i = 0, index = 0; i < h_forwardRhs->get_size()[0]; ++i )
-        for( gko::size_type j = 0; j < h_forwardRhs->get_size()[1]; ++j, ++index )
-            h_forwardRhs->at( i, j ) = inputData[index];
+    //for( gko::size_type i = 0, index = 0; i < h_forwardRhs->get_size()[0]; ++i )
+    //    for( gko::size_type j = 0; j < h_forwardRhs->get_size()[1]; ++j, ++index )
+    //        h_forwardRhs->at( i, j ) = inputData[index];
     h_forwardRhs->move_to( d_forwardRhs.get() );
 
     // Project data from source to target through weight application for each variable
@@ -315,9 +316,9 @@ void GinkgoOperator< MatrixType >::PerformSpMV( const std::vector< double >& inp
 
     d_reverseRhs->move_to( h_reverseRhs.get() );
     // auto resValues = h_reverseRhs->get_values();
-    for( gko::size_type i = 0, index = 0; i < h_reverseRhs->get_size()[0]; ++i )
-        for( gko::size_type j = 0; j < h_reverseRhs->get_size()[1]; ++j, ++index )
-            outputData[index] = h_reverseRhs->at( i, j );
+    //for( gko::size_type i = 0, index = 0; i < h_reverseRhs->get_size()[0]; ++i )
+    //    for( gko::size_type j = 0; j < h_reverseRhs->get_size()[1]; ++j, ++index )
+    //        outputData[index] = h_reverseRhs->at( i, j );
 
     return;
 }
@@ -328,16 +329,9 @@ void GinkgoOperator< MatrixType >::PerformSpMVTranspose( const std::vector< doub
 {
     assert( enableTransposeOp );
 
-
-    // multiple RHS for each variable to be projected
-    // auto srcTgt = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpCols, nRHSV } );
-    // srcTgt->fill( 0.0 );
-    // auto tgtSrc = SpMV_VectorType::create( device_executor, gko::dim< 2 >{ nOpRows, nRHSV } );
-    // tgtSrc->fill( 1.0 );
-
-    for( gko::size_type i = 0, index = 0; i < h_reverseRhs->get_size()[0]; ++i )
-        for( gko::size_type j = 0; j < h_reverseRhs->get_size()[1]; ++j, ++index )
-            h_reverseRhs->at( i, j ) = inputData[index];
+    //for( gko::size_type i = 0, index = 0; i < h_reverseRhs->get_size()[0]; ++i )
+    //    for( gko::size_type j = 0; j < h_reverseRhs->get_size()[1]; ++j, ++index )
+    //        h_reverseRhs->at( i, j ) = inputData[index];
     h_reverseRhs->move_to( d_reverseRhs.get() );
 
     // Project data from source to target through weight application for each variable
@@ -346,10 +340,9 @@ void GinkgoOperator< MatrixType >::PerformSpMVTranspose( const std::vector< doub
     }
 
     d_forwardRhs->move_to( h_forwardRhs.get() );
-    // auto resValues = h_reverseRhs->get_values();
-    for( gko::size_type i = 0, index = 0; i < h_forwardRhs->get_size()[0]; ++i )
-        for( gko::size_type j = 0; j < h_forwardRhs->get_size()[1]; ++j, ++index )
-            outputData[index] = h_forwardRhs->at( i, j );
+    //for( gko::size_type i = 0, index = 0; i < h_forwardRhs->get_size()[0]; ++i )
+    //    for( gko::size_type j = 0; j < h_forwardRhs->get_size()[1]; ++j, ++index )
+    //        outputData[index] = h_forwardRhs->at( i, j );
 
     return;
 }
